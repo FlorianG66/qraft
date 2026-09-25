@@ -1,0 +1,9 @@
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+.env
+*.log
+.vscode/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101b33" />
+    <meta
+      name="description"
+      content="Créez des QR codes personnalisés à partir d'un lien ou de vos coordonnées en quelques secondes."
+    />
+    <title>qraft — Créez des QR codes qui font avancer</title>
+    <link rel="stylesheet" href="styles.css?v=4" />
+    <script src="qrcode-generator.js" defer></script>
+    <script src="app.js?v=7" defer></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#top" aria-label="qraft, accueil">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </span>
+          <span class="brand-name">qraft<span class="brand-dot">.</span></span>
+        </a>
+
+        <nav class="main-nav" aria-label="Navigation principale">
+          <a class="nav-link active" href="#createur">Créer</a>
+          <a class="nav-link" href="#creations">Mes QR codes</a>
+          <a class="nav-link" href="#guide">Guide</a>
+        </nav>
+
+        <div class="topbar-actions">
+          <div class="auth-area">
+            <div class="guest-actions" id="guestActions">
+              <span class="local-badge"><span class="status-dot"></span>Données privées</span>
+              <button class="auth-link" id="loginButton" type="button">Connexion</button>
+              <button class="button button-dark button-small" id="registerButton" type="button">Créer un compte</button>
+            </div>
+            <div class="user-actions" id="userActions" hidden>
+              <span class="user-chip" title="Compte connecté"><span class="user-avatar" id="userAvatar">Q</span><span id="userName">Mon compte</span></span>
+              <button class="auth-link" id="logoutButton" type="button">Déconnexion</button>
+            </div>
+          </div>
+          <a class="button button-dark button-small create-nav-button" href="#createur">Créer un QR <span>↗</span></a>
+        </div>
+      </header>
+
+      <main id="top">
+        <section class="hero" aria-labelledby="hero-title">
+          <div class="hero-copy">
+            <div class="eyebrow"><span class="eyebrow-line"></span>LE QR CODE, EN PLUS SIMPLE</div>
+            <h1 id="hero-title">Un scan.<br /><em>Une action.</em></h1>
+            <p>
+              Transformez un lien ou vos coordonnées en QR code prêt à partager.
+              Personnalisez-le, téléchargez-le, c’est tout.
+            </p>
+          </div>
+          <div class="hero-art" aria-hidden="true">
+            <div class="orbit orbit-one"></div>
+            <div class="orbit orbit-two"></div>
+            <div class="art-card art-card-back"></div>
+            <div class="art-card art-card-front">
+              <div class="art-topline"><span></span><span></span><span></span></div>
+              <div class="art-qr">
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+                <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+              </div>
+              <div class="art-caption">scan me <span>↗</span></div>
+            </div>
+            <span class="art-spark spark-one">✦</span>
+            <span class="art-spark spark-two">✳</span>
+          </div>
+        </section>
+
+        <section class="builder-section" id="createur" aria-labelledby="builder-title">
+          <div class="section-heading">
+            <div>
+              <span class="section-kicker">01 — CONSTRUCTEUR</span>
+              <h2 id="builder-title">Votre QR code,<br /><span>votre signature.</span></h2>
+            </div>
+            <p>Choisissez un point de départ, ajustez les détails et voyez votre aperçu en temps réel.</p>
+          </div>
+
+          <div class="builder-grid">
+            <section class="editor-panel panel" aria-label="Éditeur du QR code">
+              <div class="panel-header">
+                <div>
+                  <span class="panel-label">CONTENU DU QR CODE</span>
+                  <h3>Que voulez-vous partager&nbsp;?</h3>
+                </div>
+                <span class="live-indicator"><span></span>Aperçu en direct</span>
+              </div>
+
+              <div class="mode-switcher" role="tablist" aria-label="Type de contenu">
+                <button class="mode-button active" type="button" role="tab" aria-selected="true" data-mode="link">
+                  <span class="mode-icon link-icon" aria-hidden="true">↗</span>
+                  <span><strong>Un lien</strong><small>Site, PDF, vidéo…</small></span>
+                </button>
+                <button class="mode-button" type="button" role="tab" aria-selected="false" data-mode="contact">
+                  <span class="mode-icon contact-icon" aria-hidden="true">◎</span>
+                  <span><strong>Mes coordonnées</strong><small>Carte de visite</small></span>
+                </button>
+              </div>
+
+              <div class="mode-content active" id="linkContent" role="tabpanel">
+                <div class="field-group">
+                  <label for="linkInput">Lien à partager <span class="required-mark">*</span></label>
+                  <div class="input-wrap input-with-icon">
+                    <span class="input-leading-icon" aria-hidden="true">↗</span>
+                    <input id="linkInput" type="url" inputmode="url" placeholder="https://votre-site.com" value="https://qraft.example/hello" autocomplete="url" />
+                    <span class="input-valid" id="linkValid" aria-hidden="true">✓</span>
+                  </div>
+                  <p class="field-hint">Un lien court est plus joli à scanner. Vous pourrez le remplacer plus tard.</p>
+                </div>
+                <div class="quick-row">
+                  <span>Essayez avec</span>
+                  <button class="quick-chip" type="button" data-sample="https://www.instagram.com/">
+                    <span class="chip-icon instagram-icon">◎</span> Instagram
+                  </button>
+                  <button class="quick-chip" type="button" data-sample="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
+                    <span class="chip-icon play-icon">▶</span> Vidéo
+                  </button>
+                  <button class="quick-chip" type="button" data-sample="https://qraft.example/menu">
+                    <span class="chip-icon menu-icon">▤</span> Menu
+                  </button>
+                </div>
+              </div>
+
+              <div class="mode-content" id="contactContent" role="tabpanel" hidden>
+                <div class="contact-intro">
+                  <span class="contact-badge">VCF</span>
+                  <p>Une carte de visite digitale, prête à ajouter aux contacts d’un scan.</p>
+                </div>
+                <div class="field-grid two-columns">
+                  <div class="field-group">
+                    <label for="firstNameInput">Prénom</label>
+                    <input id="firstNameInput" type="text" placeholder="Camille" autocomplete="given-name" />
+                  </div>
+                  <div class="field-group">
+                    <label for="lastNameInput">Nom</label>
+                    <input id="lastNameInput" type="text" placeholder="Martin" autocomplete="family-name" />
+                  </div>
+                </div>
+                <div class="field-group">
+                  <label for="companyInput">Société / organisation</label>
+                  <input id="companyInput" type="text" placeholder="Studio Martin" autocomplete="organization" />
+                </div>
+                <div class="field-grid two-columns">
+                  <div class="field-group">
+                    <label for="phoneInput">Téléphone</label>
+                    <input id="phoneInput" type="tel" placeholder="+33 6 12 34 56 78" autocomplete="tel" />
+                  </div>
+                  <div class="field-group">
+                    <label for="emailInput">E-mail</label>
+                    <input id="emailInput" type="email" placeholder="bonjour@studio.fr" autocomplete="email" />
+                  </div>
+                </div>
+                <div class="field-grid two-columns">
+                  <div class="field-group">
+                    <label for="contactWebsiteInput">Site web</label>
+                    <input id="contactWebsiteInput" type="url" placeholder="studio-martin.fr" autocomplete="url" />
+                  </div>
+                  <div class="field-group">
+                    <label for="addressInput">Ville / adresse</label>
+                    <input id="addressInput" type="text" placeholder="Lyon, France" autocomplete="street-address" />
+                  </div>
+                </div>
+              </div>
+
+              <div class="field-group qr-name-field">
+                <label for="qrNameInput">Nom du QR code <span class="optional-mark">Optionnel</span></label>
+                <input id="qrNameInput" type="text" maxlength="80" placeholder="Menu de la semaine, carte de visite…" autocomplete="off" />
+                <p class="field-hint">Ce nom est visible uniquement dans votre espace personnel.</p>
+              </div>
+
+              <div class="editor-divider"></div>
+
+              <div class="panel-header compact-header">
+                <div>
+                  <span class="panel-label">PERSONNALISATION</span>
+                  <h3>Donnez-lui une couleur.</h3>
+                </div>
+                <span class="color-count" id="colorCount">2 couleurs</span>
+              </div>
+
+              <div class="style-controls">
+                <div class="preset-list" aria-label="Palettes de couleurs">
+                  <button class="preset active" type="button" data-fg="#101b33" data-bg="#ffffff" aria-label="Palette encre">
+                    <span style="--preset-fg:#101b33;--preset-bg:#fff"></span>
+                  </button>
+                  <button class="preset" type="button" data-fg="#ef5b4f" data-bg="#fff5ed" aria-label="Palette corail">
+                    <span style="--preset-fg:#ef5b4f;--preset-bg:#fff5ed"></span>
+                  </button>
+                  <button class="preset" type="button" data-fg="#186a5a" data-bg="#e8f7ee" aria-label="Palette forêt">
+                    <span style="--preset-fg:#186a5a;--preset-bg:#e8f7ee"></span>
+                  </button>
+                  <button class="preset" type="button" data-fg="#5947b8" data-bg="#f0edff" aria-label="Palette violet">
+                    <span style="--preset-fg:#5947b8;--preset-bg:#f0edff"></span>
+                  </button>
+                  <button class="custom-color" type="button" aria-label="Choisir des couleurs personnalisées">
+                    <span>+</span>
+                  </button>
+                </div>
+                <div class="color-pickers">
+                  <label class="color-picker">
+                    <span>Modules</span>
+                    <span class="picker-control"><input id="foregroundColor" type="color" value="#101b33" /><b id="foregroundValue">#101B33</b></span>
+                  </label>
+                  <label class="color-picker">
+                    <span>Fond</span>
+                    <span class="picker-control"><input id="backgroundColor" type="color" value="#ffffff" /><b id="backgroundValue">#FFFFFF</b></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="editor-actions">
+                <button class="button button-primary" id="saveButton" type="button"><span>＋</span> Enregistrer ce QR code</button>
+                <button class="text-button" id="resetButton" type="button">Réinitialiser <span>↺</span></button>
+              </div>
+              <p class="tracking-status" id="trackingStatus"><span>↗</span> Enregistrez-le pour activer les statistiques de scan.</p>
+            </section>
+
+            <aside class="preview-panel panel" aria-label="Aperçu et téléchargement">
+              <div class="preview-topline">
+                <span class="panel-label">APERÇU</span>
+                <span class="preview-format"><span class="format-dot"></span>PNG · 1024 px</span>
+              </div>
+              <div class="qr-stage" id="qrStage">
+                <div class="stage-glow"></div>
+                <div class="qr-card">
+                  <div class="qr-card-top">
+                    <span class="mini-brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+                    <span>qraft / <b id="previewTypeLabel">LINK</b></span>
+                  </div>
+                  <div class="qr-frame" id="qrFrame">
+                    <canvas id="qrCanvas" width="1024" height="1024" aria-label="Aperçu du QR code"></canvas>
+                  </div>
+                  <div class="qr-card-bottom">
+                    <span id="previewLabel">qraft.example/hello</span>
+                    <span class="scan-arrow">↗</span>
+                  </div>
+                </div>
+                <div class="stage-tag tag-top">PERSONNALISÉ</div>
+                <div class="stage-tag tag-bottom">SCANNEZ · <span>✓</span></div>
+              </div>
+              <div class="preview-note">
+                <span class="note-icon">✦</span>
+                <p><strong>Astuce</strong> — Testez votre QR code avec deux téléphones avant de l’imprimer.</p>
+              </div>
+              <div class="download-actions">
+                <button class="button button-primary download-button" id="downloadPng" type="button"><span>↓</span> Télécharger le PNG</button>
+                <button class="button button-light download-svg" id="downloadSvg" type="button">SVG</button>
+              </div>
+              <button class="copy-button" id="copyContent" type="button"><span>⧉</span> Copier le contenu encodé <i id="copyLabel">Ctrl C</i></button>
+            </aside>
+          </div>
+        </section>
+
+        <section class="creations-section" id="creations" aria-labelledby="creations-title">
+          <div class="section-heading creations-heading">
+            <div>
+              <span class="section-kicker">02 — BIBLIOTHÈQUE</span>
+              <h2 id="creations-title">Vos créations<br /><span>en un clin d’œil.</span></h2>
+            </div>
+            <div class="library-summary"><strong id="historyCount">0</strong><span>QR codes<br />enregistrés</span></div>
+          </div>
+          <div class="library-metrics" id="libraryMetrics" hidden aria-label="Résumé de vos statistiques">
+            <article><span>QR codes actifs</span><strong id="metricQrCount">0</strong></article>
+            <article><span>Scans cumulés</span><strong id="metricScanCount">0</strong></article>
+            <article><span>Scans sur 7 jours</span><strong id="metricWeekCount">0</strong></article>
+          </div>
+          <div class="history-grid" id="historyGrid"></div>
+        </section>
+
+        <section class="guide-section" id="guide" aria-labelledby="guide-title">
+          <div class="guide-card">
+            <div class="guide-number">03</div>
+            <div class="guide-content">
+              <span class="section-kicker light-kicker">PETIT CONSEIL</span>
+              <h2 id="guide-title">Un QR code<br /><em>à votre image.</em></h2>
+              <p>Une couleur distinctive, un lien court et un nom de fichier explicite : votre QR code sera plus simple à retrouver — et à scanner.</p>
+              <a href="#createur" class="guide-link">Créer le mien <span>↗</span></a>
+            </div>
+            <div class="guide-art" aria-hidden="true">
+              <div class="guide-ring ring-a"></div>
+              <div class="guide-ring ring-b"></div>
+              <div class="guide-mini-qr"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+              <span class="guide-spark">✦</span>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <a class="brand footer-brand" href="#top"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span><span class="brand-name">qraft<span class="brand-dot">.</span></span></a>
+        <p>Fait pour les idées qui se partagent.</p>
+        <div class="footer-meta"><span>© 2024 qraft</span><span class="footer-separator">/</span><a href="#guide">Besoin d’aide&nbsp;?</a></div>
+      </footer>
+    </div>
+
+    <div class="modal-backdrop" id="authModal" hidden>
+      <section class="modal-card auth-modal-card" role="dialog" aria-modal="true" aria-labelledby="authModalTitle">
+        <button class="modal-close" type="button" data-close-modal="authModal" aria-label="Fermer">×</button>
+        <div class="modal-brand"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span><span></span></span><b>qraft.</b></div>
+        <h2 id="authModalTitle">Votre espace QR personnel</h2>
+        <p class="modal-intro">Retrouvez vos créations et leurs statistiques sur tous vos appareils.</p>
+        <div class="auth-tabs" role="tablist" aria-label="Authentification">
+          <button class="auth-tab active" id="loginTab" type="button" role="tab" aria-selected="true" data-auth-mode="login">Connexion</button>
+          <button class="auth-tab" id="registerTab" type="button" role="tab" aria-selected="false" data-auth-mode="register">Créer un compte</button>
+        </div>
+
+        <form class="auth-form" id="loginForm">
+          <div class="field-group">
+            <label for="loginEmail">Adresse e-mail</label>
+            <input id="loginEmail" name="email" type="email" maxlength="254" autocomplete="email" required />
+          </div>
+          <div class="field-group">
+            <label for="loginPassword">Mot de passe</label>
+            <input id="loginPassword" name="password" type="password" maxlength="128" autocomplete="current-password" required />
+          </div>
+          <button class="button button-primary auth-submit" type="submit">Se connecter <span>↗</span></button>
+        </form>
+
+        <form class="auth-form" id="registerForm" hidden>
+          <div class="field-group">
+            <label for="registerName">Nom complet</label>
+            <input id="registerName" name="displayName" type="text" minlength="2" maxlength="80" autocomplete="name" required />
+          </div>
+          <div class="field-group">
+            <label for="registerEmail">Adresse e-mail</label>
+            <input id="registerEmail" name="email" type="email" maxlength="254" autocomplete="email" required />
+          </div>
+          <div class="field-group">
+            <label for="registerPassword">Mot de passe</label>
+            <input id="registerPassword" name="password" type="password" minlength="12" maxlength="128" autocomplete="new-password" aria-describedby="passwordHint" required />
+            <p class="field-hint" id="passwordHint">12 caractères minimum, avec une majuscule, une minuscule et un chiffre.</p>
+          </div>
+          <button class="button button-primary auth-submit" type="submit">Créer mon espace <span>↗</span></button>
+        </form>
+        <p class="form-error" id="authError" role="alert" hidden></p>
+        <p class="security-note"><span>✓</span> Mot de passe haché · session sécurisée · données isolées par compte</p>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="statsModal" hidden>
+      <section class="modal-card stats-modal-card" role="dialog" aria-modal="true" aria-labelledby="statsModalTitle">
+        <button class="modal-close" type="button" data-close-modal="statsModal" aria-label="Fermer">×</button>
+        <span class="section-kicker">STATISTIQUES DU QR CODE</span>
+        <h2 id="statsModalTitle">Statistiques</h2>
+        <p class="modal-intro" id="statsQrLabel">—</p>
+        <div class="stats-summary">
+          <article><span>Scans cumulés</span><strong id="statsTotal">0</strong></article>
+          <article><span>30 derniers jours</span><strong id="statsPeriod">0</strong></article>
+          <article><span>Dernier scan</span><strong id="statsLastScan">—</strong></article>
+        </div>
+        <div class="stats-block">
+          <div class="stats-block-heading"><h3>Scans par jour</h3><span id="statsRangeLabel">30 jours</span></div>
+          <div class="bar-chart" id="statsChart" aria-label="Graphique des scans par jour"></div>
+        </div>
+        <div class="stats-columns">
+          <div class="stats-block">
+            <div class="stats-block-heading"><h3>Appareils</h3></div>
+            <div class="stats-list" id="statsDevices"><p>Aucune donnée</p></div>
+          </div>
+          <div class="stats-block">
+            <div class="stats-block-heading"><h3>Sources</h3></div>
+            <div class="stats-list" id="statsReferrers"><p>Aucune donnée</p></div>
+          </div>
+        </div>
+        <p class="privacy-note">Les adresses IP ne sont pas conservées. Seuls le moment, le type d’appareil et le domaine de provenance sont mesurés.</p>
+      </section>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"><span class="toast-icon">✓</span><span id="toastMessage">C’est prêt.</span></div>
+  </body>
+</html>
