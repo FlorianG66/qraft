@@ -51,7 +51,6 @@ Le serveur s’arrête automatiquement après 30 minutes sans requête métier (
 - Requêtes SQL préparées et validation stricte des données
 - Limitation des tentatives de connexion, d’inscription, de création, de scan et de téléchargement public ; déduplication des scans rapprochés
 - En-têtes CSP, HSTS en production, `X-Frame-Options`, `nosniff` et politique de référent
-- Refus des URL contenant des identifiants, des URL javascript/data et des destinations réseau privées/local par défaut (adresses IP et suffixes locaux ; les alias DNS privés nécessitent une modération)
 - Refus des URL contenant des identifiants, des URL javascript/data et des destinations réseau privées/local par défaut (adresses IP IPv4/IPv6, IPv4-mapped et suffixes locaux)
 - Aucun stockage d’adresse IP : ni dans les statistiques (un `Referer` qui est une adresse IP est ignoré), ni dans les tables ; la clé de déduplication des scans est un hachage transitoire conservé uniquement en mémoire
 - Limitation du nombre de domaines de provenance par QR code pour que les agrégats ne puissent pas croître sans borne
@@ -108,3 +107,11 @@ Avant une mise en ligne publique, ajouter au minimum :
 6. Une politique de modération des destinations et de suppression des comptes.
 
 Le mode local fourni est sécurisé pour le développement et l’usage local, mais une exposition publique nécessite ces mesures d’exploitation supplémentaires.
+
+## Licence
+
+Code source publié pour consultation. **Tous droits réservés** — aucune licence
+ouverte n’est accordée : la reproduction, la modification et la réutilisation du
+code, en tout ou partie, sont interdites sans autorisation écrite préalable.
+
+Projet en cours de développement, non achevé.
