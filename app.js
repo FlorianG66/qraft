@@ -224,7 +224,12 @@
 
   function updatePreview() {
     const rawPayload = state.mode === "link" ? getLinkPayload() : getContactPayload();
-    const useTrackedPayload = state.currentRecordId && state.trackingUrl && !state.contentDirty;
+    const useTrackedPayload = Boolean(
+      state.currentRecordId &&
+      state.trackingUrl &&
+      !state.contentDirty &&
+      isTrackingUrlReachable(state.trackingUrl)
+    );
     const encodedPayload = useTrackedPayload ? state.trackingUrl : rawPayload;
     const label = getDisplayLabel(rawPayload);
 
@@ -259,13 +264,18 @@
   }
 
   function getContactPayload() {
-    const firstName = value("firstNameInput");
-    const lastName = value("lastNameInput");
-    const company = value("companyInput");
-    const phone = value("phoneInput");
-    const email = value("emailInput");
-    const website = value("contactWebsiteInput");
-    const address = value("addressInput");
+    return buildContactPayload(getContactData());
+  }
+
+  function buildContactPayload(contactData) {
+    const contact = contactData && typeof contactData === "object" ? contactData : {};
+    const firstName = String(contact.firstName || "").trim();
+    const lastName = String(contact.lastName || "").trim();
+    const company = String(contact.company || "").trim();
+    const phone = String(contact.phone || "").trim();
+    const email = String(contact.email || "").trim();
+    const website = String(contact.website || "").trim();
+    const address = String(contact.address || "").trim();
 
     if (!firstName && !lastName && !company && !phone && !email && !website && !address) {
       return "BEGIN:VCARD\r\nVERSION:3.0\r\nFN:Votre carte de visite\r\nEND:VCARD";
@@ -413,7 +423,12 @@
         state.contentDirty = false;
         state.isDirty = false;
         updatePreview();
-        showToast(isUpdate ? "QR code mis à jour." : "QR code enregistré et suivi activé.");
+        const trackingAvailable = isTrackingUrlReachable(result.qrcode.trackingUrl);
+        showToast(
+          isUpdate
+            ? (trackingAvailable ? "QR code mis à jour." : "QR code mis à jour en mode direct local.")
+            : (trackingAvailable ? "QR code enregistré et suivi activé." : "QR code enregistré en mode direct local.")
+        );
       }
     } catch (error) {
       if (!isCurrentSession(userId, epoch)) return;
@@ -480,7 +495,7 @@
       const item = state.history.find((entry) => String(entry.id) === card.dataset.historyId);
       if (!item) return;
       const thumbnail = $("canvas", card);
-      const qr = createQr(item.trackingUrl);
+      const qr = createQr(getHistoryPayload(item));
       if (qr) drawQr(thumbnail, qr, 120, item.foreground || "#101b33", item.background || "#ffffff");
     });
   }
@@ -727,6 +742,29 @@
   function isLikelyUrl(rawValue) {
     const valueToCheck = normalizeUrl(rawValue);
     return /^https?:\/\//i.test(valueToCheck);
+  }
+
+  function isTrackingUrlReachable(rawUrl) {
+    if (!rawUrl) return false;
+    try {
+      const hostname = new URL(rawUrl).hostname
+        .toLowerCase()
+        .replace(/^\[|\]$/g, "")
+        .replace(/\.$/, "");
+      const normalizedHostname = hostname.replace(/^::ffff:/, "");
+      if (!hostname || hostname === "localhost" || hostname.endsWith(".localhost")) return false;
+      if (hostname === "0.0.0.0" || hostname === "::1" || hostname === "0:0:0:0:0:0:0:1") return false;
+      if (/^127(?:\.\d{1,3}){3}$/.test(normalizedHostname)) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function getHistoryPayload(item) {
+    if (isTrackingUrlReachable(item.trackingUrl)) return item.trackingUrl;
+    if (item.mode === "link") return item.destination || defaultLink;
+    return buildContactPayload(item.contactData || {});
   }
 
   function getDisplayLabel(payload) {
@@ -1354,9 +1392,12 @@
     if (!elements.saveButton || state.isSaving) return;
     const icon = state.currentRecordId ? "↻" : "＋";
     const label = state.currentRecordId ? "Mettre à jour ce QR code" : "Enregistrer ce QR code";
+    const trackingAvailable = Boolean(state.currentRecordId && isTrackingUrlReachable(state.trackingUrl));
     elements.saveButton.innerHTML = `<span>${icon}</span> ${label}`;
-    elements.trackingStatus.classList.toggle("active", Boolean(state.currentRecordId));
-    if (state.currentRecordId) {
+    elements.trackingStatus.classList.toggle("active", trackingAvailable);
+    if (state.currentRecordId && !trackingAvailable) {
+      elements.trackingStatus.innerHTML = "<span>↗</span> Mode direct local · configurez une origine publique pour activer le suivi.";
+    } else if (state.currentRecordId) {
       elements.trackingStatus.innerHTML = state.isDirty
         ? "<span>↗</span> Suivi actif · vos modifications ne sont pas encore enregistrées."
         : "<span>✓</span> Suivi des scans actif sur ce QR code.";

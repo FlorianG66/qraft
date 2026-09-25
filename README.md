@@ -2,7 +2,7 @@
 
 qraft est une plateforme web de génération de QR codes avec comptes utilisateurs, bibliothèque personnelle et statistiques de scan.
 
-Un QR code de lien enregistre une URL de suivi qraft (`/r/…`) : un scan est mesuré, puis l’utilisateur est redirigé vers la destination. Un QR code de coordonnées ouvre une page de contact qraft (`/c/…`) qui permet de télécharger la vCard. Les QR codes doivent être enregistrés dans un compte pour activer le suivi.
+Un QR code de lien peut utiliser une URL de suivi qraft (`/r/…`) : un scan est mesuré, puis l’utilisateur est redirigé vers la destination. En mode local, l’origine par défaut est `http://localhost:3000` : afin qu’un téléphone puisse lire le QR code, qraft encode directement la destination saisie tant qu’aucune origine publique ou réseau joignable n’est configurée. Un QR code de coordonnées ouvre une page de contact qraft (`/c/…`) qui permet de télécharger la vCard, ou encode directement la vCard en mode local. Les QR codes doivent être enregistrés dans un compte ; le suivi s’active lorsque l’origine qraft est joignable par le scanner.
 
 ## Prérequis
 
@@ -70,7 +70,9 @@ $env:NODE_ENV = "production"
 powershell -ExecutionPolicy Bypass -File .\start-server.ps1
 ```
 
-`QRAFT_PUBLIC_ORIGIN` doit être l’origine publique HTTPS réellement accessible par les scanners de QR codes. En production, le serveur refuse une origine HTTP ou des cookies non sécurisés. `QRAFT_TRUST_PROXY=true` n’est activable que si le reverse proxy **réécrit** `X-Forwarded-For` : un en-tête fourni par le client serait sinon accepté tel quel pour le rate limiting et la déduplication des scans. Pour autoriser explicitement une destination locale ou privée (développement interne uniquement) :
+`QRAFT_PUBLIC_ORIGIN` doit être l’origine publique HTTPS réellement accessible par les scanners de QR codes. En production, le serveur refuse une origine HTTP ou des cookies non sécurisés. `QRAFT_TRUST_PROXY=true` n’est activable que si le reverse proxy **réécrit** `X-Forwarded-For` : un en-tête fourni par le client serait sinon accepté tel quel pour le rate limiting et la déduplication des scans.
+
+Par défaut, l’interface reste en **mode direct local** : le QR code contient le lien saisi, car `localhost` désigne le téléphone qui scanne et non le PC qui héberge qraft. Pour activer le suivi depuis un téléphone, configurez une origine réellement joignable par ce téléphone (par exemple une adresse HTTPS publique, ou une adresse réseau locale avec `QRAFT_HOST=0.0.0.0` et les règles de pare-feu appropriées), puis redémarrez le serveur. Pour autoriser explicitement une destination locale ou privée (développement interne uniquement) :
 
 ```powershell
 $env:QRAFT_ALLOW_PRIVATE_DESTINATIONS = "true"
