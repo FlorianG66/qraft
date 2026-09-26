@@ -42,6 +42,17 @@ async function request(url, options = {}) {
   });
 }
 
+// Le webhook Stripe est vérifié sur les octets bruts : il faut pouvoir envoyer
+// un corps non re-sérialisé, ce que `request` ne permet pas.
+async function rawRequest(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  return fetch(url.startsWith("http") ? url : `${ORIGIN}${url}`, {
+    ...options,
+    headers,
+    redirect: "manual",
+  });
+}
+
 async function waitForServer(process) {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     if (process.exitCode !== null) throw new Error("Le serveur de test s’est arrêté avant son démarrage.");
@@ -1277,6 +1288,275 @@ test("offres : quotas, QR codes inactifs, régression et grâce de 48 h", async 
     grantPlan(databasePath, "impaye@example.test", "pro", { status: "past_due", graceUntil: null });
     const pastDueLibrary = await request("/api/qrcodes", { cookie: pastDue.cookie });
     assert.equal((await pastDueLibrary.json()).entitlement.plan, "pro", "past_due reste couvert");
+  } finally {
+    await stopServer(server);
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("facturation : offres refusées sans configuration, devis Entreprise et webhooks signés", async () => {
+  PORT = await getFreePort();
+  ORIGIN = `http://127.0.0.1:${PORT}`;
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "qraft-billing-"));
+  const databasePath = path.join(temporaryDirectory, "billing.sqlite");
+  const logSink = { value: "" };
+  let server;
+
+  const readLeads = () => {
+    const database = new DatabaseSync(databasePath);
+    try {
+      return database.prepare("SELECT * FROM enterprise_leads ORDER BY id").all();
+    } finally {
+      database.close();
+    }
+  };
+
+  try {
+    // ── Serveur sans aucune variable Stripe ───────────────────────────────
+    server = await startServer(buildChildEnvironment({ QRAFT_DB_PATH: databasePath }), logSink);
+    const user = await registerUser("facture@example.test", undefined, "10.9.1.1");
+
+    const offers = await request("/api/billing/offers");
+    assert.equal(offers.status, 200, "la page des offres reste lisible sans Stripe");
+    const offersBody = await offers.json();
+    assert.equal(offersBody.enabled, false);
+    assert.equal(offersBody.configured, false);
+    assert.equal(offersBody.webhooks, false);
+    assert.equal(offersBody.taxEnabled, true, "Stripe Tax reste le mode de facturation annoncé");
+    assert.deepEqual(
+      Object.keys(offersBody.offers),
+      ["decouverte", "pro", "ultra", "entreprise"],
+      "les quatre offres sont publiées même sans configuration",
+    );
+    assert.equal(offersBody.offers.entreprise.quote, true);
+    assert.equal(offersBody.offers.pro.price, null, "aucun prix ne doit être inventé");
+    assert.ok(offersBody.offers.ultra.features.includes("Logo au centre"));
+
+    const anonymousCheckout = await request("/api/billing/checkout", {
+      method: "POST",
+      headers: user.headers,
+      body: { plan: "pro" },
+    });
+    assert.equal(anonymousCheckout.status, 401, "le paiement exige une session");
+
+    const withoutCsrf = await request("/api/billing/checkout", {
+      method: "POST",
+      cookie: user.cookie,
+      headers: user.headers,
+      body: { plan: "pro" },
+    });
+    assert.equal(withoutCsrf.status, 403, "le jeton CSRF est exigé");
+
+    const unconfigured = await request("/api/billing/checkout", {
+      method: "POST",
+      cookie: user.cookie,
+      csrf: user.csrf,
+      headers: user.headers,
+      body: { plan: "pro" },
+    });
+    assert.equal(unconfigured.status, 503, logSink.value);
+    assert.equal((await unconfigured.json()).error.code, "billing_not_configured");
+
+    const portal = await request("/api/billing/portal", {
+      method: "POST",
+      cookie: user.cookie,
+      csrf: user.csrf,
+      headers: user.headers,
+    });
+    assert.equal(portal.status, 503, "le portail suit la même règle");
+
+    const webhook = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "evt_sans_config", type: "invoice.paid" }),
+    });
+    assert.equal(webhook.status, 503, "aucun webhook sans secret configuré");
+    assert.equal((await webhook.json()).error.code, "webhooks_not_configured");
+
+    // Découverte et Entreprise ne sont pas achetables en ligne.
+    for (const plan of ["decouverte", "entreprise"]) {
+      const refused = await request("/api/billing/checkout", {
+        method: "POST",
+        cookie: user.cookie,
+        csrf: user.csrf,
+        headers: user.headers,
+        body: { plan },
+      });
+      assert.equal(refused.status, 400, `l’offre ${plan} ne doit pas être achetable`);
+      assert.equal((await refused.json()).error.code, "plan_not_purchasable");
+    }
+
+    const badSession = await request("/api/billing/confirm", {
+      method: "POST",
+      cookie: user.cookie,
+      csrf: user.csrf,
+      headers: user.headers,
+      body: { sessionId: "pas-une-session" },
+    });
+    assert.equal(badSession.status, 400, "une référence de session mal formée est rejetée");
+
+    // ── Demande de devis Entreprise ───────────────────────────────────────
+    const shortMessage = await request("/api/billing/enterprise", {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin", "X-Forwarded-For": "10.9.1.1" },
+      body: { company: "Mairie de Test", email: "achats@example.test", message: "vite" },
+    });
+    assert.equal(shortMessage.status, 400, "une demande vide de contexte est refusée");
+
+    const badEmail = await request("/api/billing/enterprise", {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin", "X-Forwarded-For": "10.9.1.1" },
+      body: { company: "Mairie de Test", email: "pas-un-email", message: "Nous déployons 4 000 QR codes." },
+    });
+    assert.equal(badEmail.status, 400, "l’adresse e-mail est validée");
+
+    const lead = await request("/api/billing/enterprise", {
+      method: "POST",
+      cookie: user.cookie,
+      headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin", "X-Forwarded-For": "10.9.1.1" },
+      body: {
+        company: "Mairie de Test",
+        contactName: "Camille Dupont",
+        email: "achats@example.test",
+        phone: "+33 1 00 00 00 00",
+        volume: "4 000",
+        message: "Nous déployons 4 000 QR codes sur les agents de la mairie.",
+      },
+    });
+    assert.equal(lead.status, 201, logSink.value);
+    assert.deepEqual(await lead.json(), { received: true }, "la réponse ne reprend aucun champ saisi");
+
+    const leads = readLeads();
+    assert.equal(leads.length, 1);
+    assert.equal(leads[0].company, "Mairie de Test");
+    assert.equal(leads[0].email, "achats@example.test");
+    assert.ok(leads[0].user_id, "le compte connecté est rattaché à la demande");
+
+    // Un visiteur non connecté peut aussi demander un devis.
+    const guestLead = await request("/api/billing/enterprise", {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin", "X-Forwarded-For": "10.9.1.2" },
+      body: { company: "Groupe Invite", email: "contact@invite.test", message: "Besoin d’une offre illimitée." },
+    });
+    assert.equal(guestLead.status, 201);
+    assert.equal(readLeads()[1].user_id, null, "une demande anonyme reste anonyme");
+
+    // Le quota par IP arrête le remplissage automatique.
+    let limited = 0;
+    for (let index = 0; index < 6; index += 1) {
+      const attempt = await request("/api/billing/enterprise", {
+        method: "POST",
+        headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin", "X-Forwarded-For": "10.9.1.9" },
+        body: { company: "Remplissage", email: "spam@example.test", message: "Message de remplissage automatique." },
+      });
+      if (attempt.status === 429) limited += 1;
+    }
+    assert.ok(limited > 0, "le quota de demandes par IP doit finir par s’appliquer");
+
+    await stopServer(server);
+
+    // ── Serveur configuré (clé factice, aucun appel réseau atteint) ───────
+    const stripe = (await import("stripe")).default;
+    const webhookSecret = "whsec_test_qraft";
+    const SECRET_KEY = "sk_test_qraft_SONDE_1234567890";
+    server = await startServer(
+      buildChildEnvironment({
+        QRAFT_DB_PATH: databasePath,
+        QRAFT_STRIPE_SECRET_KEY: SECRET_KEY,
+        QRAFT_STRIPE_WEBHOOK_SECRET: webhookSecret,
+        QRAFT_STRIPE_PRICE_PRO: "price_test_pro",
+        QRAFT_STRIPE_PRICE_ULTRA: "price_test_ultra",
+      }),
+      logSink,
+    );
+
+    // Le double abonnement est refusé avant tout appel à Stripe.
+    grantPlan(databasePath, "facture@example.test", "pro", { status: "active" });
+    const alreadySubscribed = await request("/api/billing/checkout", {
+      method: "POST",
+      cookie: user.cookie,
+      csrf: user.csrf,
+      headers: user.headers,
+      body: { plan: "ultra" },
+    });
+    assert.equal(alreadySubscribed.status, 409, logSink.value);
+    assert.equal((await alreadySubscribed.json()).error.code, "subscription_already_active");
+
+    // ── Webhooks : signature obligatoire, idempotence ─────────────────────
+    const payload = JSON.stringify({
+      id: "evt_test_signature",
+      type: "invoice.paid",
+      data: { object: { id: "in_test" } },
+    });
+
+    const noSignature = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+    });
+    assert.equal(noSignature.status, 400, "un événement non signé est rejeté");
+    assert.equal((await noSignature.json()).error.code, "invalid_webhook_signature");
+
+    const wrongSecret = stripe.webhooks.generateTestHeaderString({
+      payload,
+      secret: "whsec_secret_du_mauvais_cote",
+    });
+    const forged = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Stripe-Signature": wrongSecret },
+      body: payload,
+    });
+    assert.equal(forged.status, 400, "une signature forgée est rejetée");
+
+    const signature = stripe.webhooks.generateTestHeaderString({ payload, secret: webhookSecret });
+    const accepted = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Stripe-Signature": signature },
+      body: payload,
+    });
+    assert.equal(accepted.status, 200, logSink.value);
+    assert.deepEqual(await accepted.json(), { received: true });
+
+    const replayed = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Stripe-Signature": signature },
+      body: payload,
+    });
+    assert.equal(replayed.status, 200, "une redelivraison ne doit pas échouer");
+    assert.deepEqual(
+      await replayed.json(),
+      { received: true, duplicate: true },
+      "le même event_id n’est traité qu’une fois",
+    );
+
+    const tampered = await rawRequest("/api/billing/stripe/webhook", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Stripe-Signature": signature },
+      body: payload.replace("invoice.paid", "customer.subscription.deleted"),
+    });
+    assert.equal(tampered.status, 400, "un corps modifié invalide la signature");
+
+    // ── Aucune clé ne doit jamais atteindre le journal ──────────────────────
+    logSink.value = "";
+    const leakedKey = await request("/api/billing/portal", {
+      method: "POST",
+      cookie: user.cookie,
+      csrf: user.csrf,
+      headers: user.headers,
+    });
+    assert.ok(leakedKey.status >= 400, "une clé Stripe factice doit faire échouer l’appel");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.equal(
+      logSink.value.includes(SECRET_KEY),
+      false,
+      "la clé secrète ne doit jamais être écrite dans le journal",
+    );
+    assert.equal(
+      logSink.value.includes(webhookSecret),
+      false,
+      "le secret de webhook ne doit jamais être écrit dans le journal",
+    );
+    assert.ok(!JSON.stringify(await leakedKey.json()).includes("sk_"), "la réponse au client ne doit rien divulguer");
   } finally {
     await stopServer(server);
     rmSync(temporaryDirectory, { recursive: true, force: true });

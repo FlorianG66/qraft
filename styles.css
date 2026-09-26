@@ -2394,6 +2394,225 @@ body.modal-open {
   max-width: 560px;
 }
 
+.offers-modal-card {
+  max-width: 940px;
+  width: min(940px, 94vw);
+}
+
+.offers-notice {
+  background: #fff4f2;
+  border: 1px solid rgba(189, 60, 52, 0.24);
+  border-radius: var(--radius-md);
+  color: var(--coral-deep);
+  font-size: 12.5px;
+  line-height: 1.55;
+  margin: 0 0 20px;
+  padding: 12px 15px;
+}
+
+.offers-notice[hidden] {
+  display: none;
+}
+
+.offers-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(4, 1fr);
+  margin-top: 22px;
+}
+
+.offer-card {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 20px 18px 22px;
+  position: relative;
+}
+
+.offer-card.is-current {
+  border-color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+}
+
+.offer-card.is-featured {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--white);
+}
+
+.offer-flag {
+  background: var(--mint);
+  border-radius: 999px;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 8px;
+  font-weight: 600;
+  left: 18px;
+  letter-spacing: 0.08em;
+  padding: 4px 9px;
+  position: absolute;
+  text-transform: uppercase;
+  top: -9px;
+}
+
+.offer-name {
+  color: inherit;
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.offer-price {
+  align-items: baseline;
+  color: inherit;
+  display: flex;
+  gap: 5px;
+}
+
+.offer-price b {
+  font-size: 27px;
+  font-weight: 800;
+  letter-spacing: -0.05em;
+}
+
+.offer-price span {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.03em;
+}
+
+.offer-card.is-featured .offer-price span,
+.offer-card.is-featured .offer-features,
+.offer-card.is-featured .offer-note {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.offer-features {
+  color: var(--ink-soft);
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.offer-features li {
+  font-size: 12.5px;
+  line-height: 1.45;
+  padding-left: 18px;
+  position: relative;
+}
+
+.offer-features li::before {
+  color: var(--coral);
+  content: "✓";
+  font-size: 11px;
+  left: 0;
+  position: absolute;
+  top: 1px;
+}
+
+.offer-card.is-featured .offer-features li::before {
+  color: var(--mint);
+}
+
+.offer-note {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.03em;
+  line-height: 1.5;
+}
+
+.offer-card .button {
+  width: 100%;
+}
+
+.offer-card.is-current .offer-current {
+  background: rgba(16, 27, 51, 0.07);
+  color: var(--ink);
+}
+
+.offers-management {
+  align-items: center;
+  border-top: 1px solid var(--line);
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  margin-top: 22px;
+  padding-top: 18px;
+}
+
+.offers-management[hidden] {
+  display: none;
+}
+
+.offers-management p {
+  color: var(--ink-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.enterprise-form {
+  margin-top: 22px;
+}
+
+.enterprise-form[hidden] {
+  display: none;
+}
+
+.enterprise-form h3 {
+  color: var(--ink);
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 6px 0 8px;
+}
+
+.enterprise-grid {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.enterprise-form .field-group {
+  margin-bottom: 14px;
+}
+
+.enterprise-form textarea {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  font-family: inherit;
+  font-size: 13.5px;
+  line-height: 1.55;
+  padding: 11px 13px;
+  resize: vertical;
+  width: 100%;
+}
+
+.enterprise-error {
+  color: var(--coral-deep);
+  font-size: 12.5px;
+  font-weight: 600;
+  margin: 0 0 12px;
+}
+
+.enterprise-error[hidden] {
+  display: none;
+}
+
+.enterprise-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
 .quota-modal-list {
   display: flex;
   flex-direction: column;
@@ -3167,6 +3386,16 @@ body.modal-open {
 
   .quota-modal-actions {
     flex-direction: column-reverse;
+  }
+
+  .offers-grid,
+  .enterprise-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .offers-management {
+    align-items: stretch;
+    flex-direction: column;
   }
 
   .stats-summary {

@@ -10,5 +10,8 @@
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test"
+  },
+  "dependencies": {
+    "stripe": "^22.6.2"
   }
 }

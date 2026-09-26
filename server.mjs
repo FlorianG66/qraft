@@ -7,6 +7,13 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import {
+  buildCheckoutParams as buildStripeCheckoutParams,
+  computeGraceUntil,
+  normalizeStripeStatus,
+  readPeriodEnd,
+  redactSecrets,
+} from "./billing-rules.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const scrypt = promisify(scryptCallback);
@@ -80,6 +87,30 @@ const PLAN_CATALOG = {
   },
 };
 const DEFAULT_PLAN = "decouverte";
+// Seules Pro et Ultra sont facturables. Découverte est gratuite et Entreprise
+// passe par un devis, donc aucune de ces deux offres n'a de Price Stripe : le
+// webhook refuse alors de leur attribuer un accès payant.
+const BILLABLE_PLANS = ["pro", "ultra"];
+const STRIPE_PRICE_ENV = {
+  pro: "STRIPE_PRICE_PRO",
+  ultra: "STRIPE_PRICE_ULTRA",
+};
+const STRIPE_SECRET_KEY = readStripeEnv("STRIPE_SECRET_KEY");
+const STRIPE_WEBHOOK_SECRET = readStripeEnv("STRIPE_WEBHOOK_SECRET");
+const STRIPE_PRICES = Object.fromEntries(
+  BILLABLE_PLANS.map((plan) => [plan, readStripeEnv(STRIPE_PRICE_ENV[plan])])
+);
+const STRIPE_PRICE_BY_ID = new Map(
+  Object.entries(STRIPE_PRICES).filter(([, priceId]) => priceId).map(([plan, priceId]) => [priceId, plan])
+);
+// Sans clé secrète, aucun appel réseau n'est possible : la billetterie reste
+// inerte et le serveur démarre normalement, ce qui garde les tests et la
+// développement local hors ligne fonctionnels.
+const BILLING_ENABLED = Boolean(STRIPE_SECRET_KEY);
+const BILLING_CONFIGURED = BILLING_ENABLED && BILLABLE_PLANS.some((plan) => STRIPE_PRICES[plan]);
+const BILLING_WEBHOOKS_ENABLED = BILLING_ENABLED && Boolean(STRIPE_WEBHOOK_SECRET);
+const STRIPE_API_VERSION = "2025-10-29.clover";
+let stripeClient = null;
 // Palier de personnalisation par offre, avec l'offre minimale exigée : le refus
 // doit nommer le palier à atteindre plutôt qu'un « 402 » nu.
 const STYLE_ENTITLEMENTS = {
@@ -247,6 +278,23 @@ db.exec(`
     received_at INTEGER NOT NULL
   ) STRICT;
 
+  -- L'offre Entreprise se négocie : la demande est conservée pour la traiter
+  -- hors ligne, jamais pour accorder un accès automatique. La colonne user_id
+  -- est nullable car la demande peut arriver avant la création du compte.
+  CREATE TABLE IF NOT EXISTS enterprise_leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    company TEXT NOT NULL,
+    contact_name TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL,
+    phone TEXT NOT NULL DEFAULT '',
+    volume TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX IF NOT EXISTS idx_enterprise_leads_created ON enterprise_leads(created_at DESC);
+
   PRAGMA user_version = 1;
 `);
 
@@ -380,6 +428,20 @@ function readInteger(name, fallback, minimum, maximum) {
     throw new Error(`${name} doit être un entier entre ${minimum} et ${maximum}.`);
   }
   return value;
+}
+
+// Les variables Stripe suivent la convention `QRAFT_` du projet, mais la
+// convention `STRIPE_` de l'outillage est aussi acceptée : c'est ce que
+// fournit la console en production. Les deux lisent la même variable.
+function readStripeEnv(name) {
+  return cleanText(process.env[`QRAFT_${name}`] || process.env[name] || "", 255);
+}
+
+// Aucune trace d'une clé ne doit atteindre le journal, même enveloppée dans une
+// erreur de SDK. Le masquage est fait par `redactSecrets` (billing-rules.mjs),
+// testable isolément.
+function isStripeSdkError(error) {
+  return typeof error?.type === "string" && error.type.startsWith("Stripe");
 }
 
 function now() {
@@ -1041,6 +1103,392 @@ function resolveEntitlement(userId) {
   };
 }
 
+// ── Facturation Stripe ──────────────────────────────────────────────────────
+// Import différé : le serveur doit démarrer sans `node_modules` (installation
+// oubliée, environnement de test) et se contenter de refuser la facturation.
+async function getStripe() {
+  if (!BILLING_ENABLED) {
+    throw new HttpError(
+      503,
+      "La facturation n’est pas configurée sur ce serveur.",
+      "billing_not_configured"
+    );
+  }
+  if (!stripeClient) {
+    const { default: Stripe } = await import("stripe");
+    stripeClient = new Stripe(STRIPE_SECRET_KEY, {
+      apiVersion: STRIPE_API_VERSION,
+      // Sans plafond, une API Stripe lente immobilise la requête HTTP derrière.
+      timeout: 10_000,
+      maxNetworkRetries: 1,
+    });
+  }
+  return stripeClient;
+}
+
+function requireBillingConfigured() {
+  if (!BILLING_CONFIGURED) {
+    throw new HttpError(
+      503,
+      "La facturation n’est pas configurée sur ce serveur.",
+      "billing_not_configured"
+    );
+  }
+}
+
+function readSubscriptionPriceId(subscription) {
+  const price = subscription.items?.data?.[0]?.price;
+  return typeof price === "string" ? price : (price?.id || null);
+}
+
+function resolvePlanForSubscription(subscription, existingPlan) {
+  // `metadata.plan` est écrit à la création du Checkout et prime : un dashboard
+  // Stripe remappé à la main ne doit pas pouvoir changer l'offre servie.
+  const declared = cleanText(subscription.metadata?.plan, 32);
+  if (PLAN_CATALOG[declared] && BILLABLE_PLANS.includes(declared)) return declared;
+  const byPrice = STRIPE_PRICE_BY_ID.get(readSubscriptionPriceId(subscription));
+  if (byPrice) return byPrice;
+  if (existingPlan && PLAN_CATALOG[existingPlan]) return existingPlan;
+  return null;
+}
+
+function findUserIdByStripeCustomer(customerId) {
+  if (!customerId) return null;
+  const row = db.prepare("SELECT user_id FROM billing_customers WHERE stripe_customer_id = ?").get(customerId);
+  return row ? row.user_id : null;
+}
+
+function findUserIdFromMetadata(value) {
+  const userId = Number(cleanText(value, 24));
+  if (!Number.isInteger(userId) || userId < 1) return null;
+  return db.prepare("SELECT id FROM users WHERE id = ?").get(userId)?.id ?? null;
+}
+
+function linkStripeCustomer(userId, customerId) {
+  if (!userId || !customerId) return;
+  db.prepare(`
+    INSERT INTO billing_customers (user_id, stripe_customer_id, created_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(user_id) DO UPDATE SET stripe_customer_id = excluded.stripe_customer_id
+  `).run(userId, customerId, now());
+  // Le même client Stripe ne peut pas être rattaché à deux comptes qraft.
+  db.prepare("UPDATE billing_customers SET user_id = ? WHERE stripe_customer_id = ? AND user_id <> ?")
+    .run(userId, customerId, userId);
+}
+
+async function getOrCreateStripeCustomer(userId) {
+  const existing = db.prepare("SELECT stripe_customer_id FROM billing_customers WHERE user_id = ?").get(userId);
+  if (existing) return existing.stripe_customer_id;
+  const user = db.prepare("SELECT display_name, email FROM users WHERE id = ?").get(userId);
+  if (!user) throw new HttpError(404, "Compte introuvable.", "user_not_found");
+  const stripe = await getStripe();
+  const customer = await stripe.customers.create({
+    email: user.email,
+    name: user.display_name,
+    metadata: { qraft_user_id: String(userId) },
+  });
+  linkStripeCustomer(userId, customer.id);
+  const stored = db.prepare("SELECT stripe_customer_id FROM billing_customers WHERE user_id = ?").get(userId);
+  return stored ? stored.stripe_customer_id : customer.id;
+}
+
+// Un seul abonnement vivant par compte est garanti par
+// `idx_subscriptions_live_user`. Les lignes `incomplete` et `incomplete_expired`
+// ne sont jamais insérées, sinon un Checkout abandonné figerait le compte.
+function syncSubscriptionFromStripe(subscription) {
+  const stripeSubscriptionId = cleanText(subscription?.id, 64);
+  if (!stripeSubscriptionId) return null;
+  const customerId = typeof subscription.customer === "string" ? subscription.customer : subscription.customer?.id;
+  const existing = db.prepare("SELECT * FROM subscriptions WHERE stripe_subscription_id = ?").get(stripeSubscriptionId);
+  const status = normalizeStripeStatus(subscription.status);
+  const plan = resolvePlanForSubscription(subscription, existing?.plan);
+  const timestamp = now();
+  const periodEnd = readPeriodEnd(subscription);
+
+  if (!existing) {
+    if (status === "incomplete" || status === "incomplete_expired") return null;
+    if (!plan) {
+      console.error(
+        `qraft billing: abonnement Stripe ${stripeSubscriptionId} sur un Price inconnu, accès laissé sur Découverte.`
+      );
+      return null;
+    }
+    const userId =
+      findUserIdByStripeCustomer(customerId)
+      || findUserIdFromMetadata(subscription.metadata?.qraft_user_id);
+    if (!userId) {
+      console.error(`qraft billing: abonnement Stripe ${stripeSubscriptionId} sans compte qraft associé, ignoré.`);
+      return null;
+    }
+    if (customerId) linkStripeCustomer(userId, customerId);
+    db.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, status, stripe_customer_id, stripe_subscription_id, stripe_price_id,
+        current_period_end, cancel_at_period_end, grace_until, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      userId,
+      plan,
+      status,
+      customerId || "",
+      stripeSubscriptionId,
+      readSubscriptionPriceId(subscription) || STRIPE_PRICES[plan] || "",
+      periodEnd,
+      subscription.cancel_at_period_end ? 1 : 0,
+      computeGraceUntil(status, periodEnd, timestamp),
+      timestamp,
+      timestamp
+    );
+    return db.prepare("SELECT * FROM subscriptions WHERE stripe_subscription_id = ?").get(stripeSubscriptionId);
+  }
+
+  if (!plan) {
+    console.error(
+      `qraft billing: abonnement Stripe ${stripeSubscriptionId} sur un Price inconnu, offre ${existing.plan} conservée.`
+    );
+    return existing;
+  }
+  db.prepare(`
+    UPDATE subscriptions
+    SET plan = ?, status = ?, stripe_customer_id = ?, stripe_price_id = ?, current_period_end = ?,
+        cancel_at_period_end = ?, grace_until = ?, updated_at = ?
+    WHERE id = ?
+  `).run(
+    plan,
+    status,
+    customerId || existing.stripe_customer_id,
+    readSubscriptionPriceId(subscription) || existing.stripe_price_id,
+    periodEnd,
+    subscription.cancel_at_period_end ? 1 : 0,
+    computeGraceUntil(status, periodEnd, timestamp),
+    timestamp,
+    existing.id
+  );
+  return db.prepare("SELECT * FROM subscriptions WHERE stripe_subscription_id = ?").get(stripeSubscriptionId);
+}
+
+// Résumé destiné au client : aucun identifiant Stripe n'est exposé.
+function getSubscriptionSummary(userId) {
+  const row = db.prepare(`
+    SELECT plan, status, current_period_end, cancel_at_period_end, grace_until
+    FROM subscriptions
+    WHERE user_id = ?
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(userId);
+  const customer = db.prepare("SELECT 1 AS ok FROM billing_customers WHERE user_id = ?").get(userId);
+  if (!row) {
+    return {
+      hasBillingAccount: Boolean(customer),
+      plan: DEFAULT_PLAN,
+      status: null,
+      cancelAtPeriodEnd: false,
+      currentPeriodEnd: null,
+      graceUntil: null,
+    };
+  }
+  return {
+    hasBillingAccount: Boolean(customer),
+    plan: row.plan,
+    status: row.status,
+    cancelAtPeriodEnd: Boolean(row.cancel_at_period_end),
+    currentPeriodEnd: row.current_period_end,
+    graceUntil: row.grace_until,
+  };
+}
+
+const priceCache = { value: null, expiresAt: 0 };
+// Un Price illisible ne doit pas bloquer la page des offres plus de quelques
+// secondes : au-delà, l'offre est simplement donnée comme indisponible.
+const PRICE_LOOKUP_TIMEOUT_MS = 5_000;
+
+function withTimeout(promise, milliseconds) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`délai dépassé après ${milliseconds} ms`)), milliseconds);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); }
+    );
+  });
+}
+
+async function readStripePrices() {
+  if (!BILLING_CONFIGURED) return {};
+  if (priceCache.value && priceCache.expiresAt > now()) return priceCache.value;
+  const stripe = await getStripe();
+  const offers = {};
+  for (const plan of BILLABLE_PLANS) {
+    const priceId = STRIPE_PRICES[plan];
+    if (!priceId) continue;
+    try {
+      const price = await withTimeout(stripe.prices.retrieve(priceId), PRICE_LOOKUP_TIMEOUT_MS);
+      if (price.active === false) {
+        throw new Error(`le Price ${priceId} de l'offre ${plan} est désactivé`);
+      }
+      if (price.currency !== "eur") {
+        throw new Error(`le Price ${priceId} de l'offre ${plan} n'est pas en euros`);
+      }
+      if (price.recurring?.interval !== "month" || price.recurring?.interval_count !== 1) {
+        throw new Error(`le Price ${priceId} de l'offre ${plan} n'est pas un abonnement mensuel`);
+      }
+      offers[plan] = {
+        amount: price.unit_amount,
+        currency: price.currency.toUpperCase(),
+        interval: "month",
+      };
+    } catch (error) {
+      console.error(`qraft billing: Price ${priceId} illisible (${redactSecrets(error.message)}).`);
+      offers[plan] = null;
+    }
+  }
+  priceCache.value = offers;
+  priceCache.expiresAt = now() + 60 * 60 * 1_000;
+  return offers;
+}
+
+function buildOffersPayload(prices) {
+  const featuresFor = (plan) => {
+    const catalog = PLAN_CATALOG[plan];
+    const style = STYLE_ENTITLEMENTS[catalog.customization];
+    const features = [
+      `${catalog.maxQrcodes === null ? "QR codes illimités" : `${catalog.maxQrcodes} QR codes enregistrés`}`,
+      `${catalog.maxActive === null ? "QR codes actifs illimités" : `${catalog.maxActive} QR code actif`}`,
+      `Statistiques sur ${catalog.statsDays} jours`,
+    ];
+    if (style.gradient) features.push("Dégradés");
+    if (style.moduleShapes.includes("rounded")) features.push("Modules arrondis");
+    if (style.eyeShapes.includes("leaf")) features.push("Yeux en feuille");
+    if (style.logo) features.push("Logo au centre");
+    if (catalog.support) features.push(catalog.support === "prioritaire" ? "Support prioritaire" : "Support standard");
+    return features;
+  };
+  return {
+    decouverte: {
+      key: "decouverte",
+      label: PLAN_CATALOG.decouverte.label,
+      price: null,
+      features: featuresFor("decouverte"),
+    },
+    pro: {
+      key: "pro",
+      label: PLAN_CATALOG.pro.label,
+      price: prices.pro || null,
+      features: featuresFor("pro"),
+    },
+    ultra: {
+      key: "ultra",
+      label: PLAN_CATALOG.ultra.label,
+      price: prices.ultra || null,
+      features: featuresFor("ultra"),
+    },
+    entreprise: {
+      key: "entreprise",
+      label: PLAN_CATALOG.entreprise.label,
+      price: null,
+      quote: true,
+      features: featuresFor("entreprise"),
+    },
+  };
+}
+
+function findLiveStripeSubscription(userId) {
+  return db.prepare(`
+    SELECT stripe_subscription_id FROM subscriptions
+    WHERE user_id = ? AND status NOT IN ('canceled','incomplete_expired')
+    LIMIT 1
+  `).get(userId) || null;
+}
+
+// Paramètres de la session Checkout, isolés de l'appel réseau pour être
+// vérifiables : c'est ici que sont décidés la fiscalité, la collecte de la
+// carte et la résiliation.
+function buildCheckoutParams(userId, plan, customerId, priceId) {
+  return buildStripeCheckoutParams({ userId, plan, customerId, priceId, publicOrigin: PUBLIC_ORIGIN });
+}
+
+async function createCheckoutSession(userId, plan) {
+  if (!BILLABLE_PLANS.includes(plan) || !PLAN_CATALOG[plan]) {
+    throw new HttpError(400, "Cette offre ne peut pas être achetée en ligne.", "plan_not_purchasable");
+  }
+  requireBillingConfigured();
+  const priceId = STRIPE_PRICES[plan];
+  if (!priceId) {
+    throw new HttpError(
+      503,
+      "Cette offre n’est pas encore disponible à la vente.",
+      "plan_not_purchasable"
+    );
+  }
+  const live = findLiveStripeSubscription(userId);
+  if (live) {
+    // Changer d'offre passe par le portail : c'est le seul chemin qui évite de
+    // laisser cohabiter deux abonnements vivants sur un même compte.
+    throw new HttpError(
+      409,
+      "Vous avez déjà un abonnement actif. Gérez-le depuis votre espace de facturation.",
+      "subscription_already_active"
+    );
+  }
+  const stripe = await getStripe();
+  const customerId = await getOrCreateStripeCustomer(userId);
+  const session = await stripe.checkout.sessions.create(
+    buildCheckoutParams(userId, plan, customerId, priceId)
+  );
+  if (!session?.url) {
+    throw new HttpError(502, "Stripe n’a pas renvoyé d’adresse de paiement.", "checkout_failed");
+  }
+  return session.url;
+}
+
+async function createPortalSession(userId) {
+  requireBillingConfigured();
+  const customer = db.prepare("SELECT stripe_customer_id FROM billing_customers WHERE user_id = ?").get(userId);
+  if (!customer) {
+    throw new HttpError(
+      404,
+      "Aucun abonnement à gérer. Choisissez d’abord une offre payante.",
+      "no_billing_account"
+    );
+  }
+  const stripe = await getStripe();
+  const session = await stripe.billingPortal.sessions.create({
+    customer: customer.stripe_customer_id,
+    return_url: `${PUBLIC_ORIGIN}/`,
+  });
+  if (!session?.url) {
+    throw new HttpError(502, "Stripe n’a pas renvoyé d’adresse de facturation.", "portal_failed");
+  }
+  return session.url;
+}
+
+async function processStripeEvent(event) {
+  switch (event.type) {
+    case "checkout.session.completed": {
+      const session = event.data?.object;
+      if (session?.mode !== "subscription") return;
+      if (session.customer) {
+        const userId =
+          findUserIdByStripeCustomer(typeof session.customer === "string" ? session.customer : session.customer.id)
+          || findUserIdFromMetadata(session.client_reference_id)
+          || findUserIdFromMetadata(session.metadata?.qraft_user_id);
+        if (userId) linkStripeCustomer(userId, typeof session.customer === "string" ? session.customer : session.customer.id);
+      }
+      const subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+      if (!subscriptionId) return;
+      const stripe = await getStripe();
+      syncSubscriptionFromStripe(await stripe.subscriptions.retrieve(subscriptionId));
+      return;
+    }
+    case "customer.subscription.created":
+    case "customer.subscription.updated":
+    case "customer.subscription.deleted":
+      syncSubscriptionFromStripe(event.data?.object);
+      return;
+    default:
+      return;
+  }
+}
+
 function parsePagination(url) {
   const rawLimit = url.searchParams.get("limit");
   const rawOffset = url.searchParams.get("offset");
@@ -1261,6 +1709,33 @@ async function readJson(request, maxBytes = MAX_JSON_BYTES) {
   });
 }
 
+function readRawBody(request, maxBytes = MAX_JSON_BYTES) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    let settled = false;
+    const chunks = [];
+    request.on("data", (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > maxBytes) {
+        settled = true;
+        request.removeAllListeners("data");
+        request.resume();
+        reject(new HttpError(413, "La requête est trop volumineuse.", "payload_too_large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    request.on("end", () => {
+      if (settled) return;
+      resolve(Buffer.concat(chunks));
+    });
+    request.on("error", () => {
+      if (!settled) reject(new HttpError(400, "La requête n’a pas pu être lue.", "invalid_request"));
+    });
+  });
+}
+
 function securityHeaders(response, options = {}) {
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
@@ -1302,10 +1777,21 @@ function sendHtml(response, status, html, extraHeaders = {}, securityOptions = {
 }
 
 function sendError(response, error) {
-  const status = error instanceof HttpError ? error.status : 500;
-  const message = error instanceof HttpError ? error.message : "Une erreur interne est survenue.";
-  const code = error instanceof HttpError ? error.code : "internal_error";
-  if (status >= 500) console.error(error);
+  const isStripe = isStripeSdkError(error);
+  const status = isStripe ? 502 : (error instanceof HttpError ? error.status : 500);
+  let message = error instanceof HttpError ? error.message : "Une erreur interne est survenue.";
+  let code = error instanceof HttpError ? error.code : "internal_error";
+  if (isStripe) {
+    // Le détail utile est pour l'exploitant, pas pour le client : il reste dans
+    // le journal, filtré, et la réponse se limite à un message actionnable.
+    message = "Le service de paiement est momentanément indisponible. Réessayez dans un instant.";
+    code = "billing_unavailable";
+  }
+  if (status >= 500) {
+    // La pile est conservée pour le diagnostic, mais jamais l'objet brut : il
+    // peut contenir la requête envoyée, donc l'authentification.
+    console.error(redactSecrets(error?.stack || error?.message || String(error)));
+  }
   const headers = error.retryAfter ? { "Retry-After": String(error.retryAfter) } : {};
   if (response.headersSent) {
     response.destroy();
@@ -1325,6 +1811,7 @@ async function handleAuthApi(request, response, url) {
       user: { id: session.userId, displayName: session.displayName, email: session.email },
       csrfToken: session.csrfToken,
       entitlement: resolveEntitlement(session.userId),
+      subscription: getSubscriptionSummary(session.userId),
     });
     return;
   }
@@ -1598,7 +2085,163 @@ async function handleApi(request, response, url) {
     await handleQrApi(request, response, url, session);
     return;
   }
+  if (url.pathname === "/api/billing/stripe/webhook") {
+    // Avant toute session : Stripe n'a pas de cookie qraft. La seule preuve
+    // d'authenticité est la signature, vérifiée sur le corps brut.
+    await handleStripeWebhook(request, response);
+    return;
+  }
+  if (url.pathname.startsWith("/api/billing/")) {
+    await handleBillingApi(request, response, url);
+    return;
+  }
   throw new HttpError(404, "Ressource introuvable.", "not_found");
+}
+
+async function handleBillingApi(request, response, url) {
+  if (request.method === "GET" && url.pathname === "/api/billing/offers") {
+    const prices = await readStripePrices();
+    sendJson(response, 200, {
+      // `false` = serveur sans facturation : l'interface doit le signaler
+      // plutôt que d'afficher un prix fantôme.
+      enabled: BILLING_ENABLED,
+      configured: BILLING_CONFIGURED,
+      webhooks: BILLING_WEBHOOKS_ENABLED,
+      taxEnabled: true,
+      offers: buildOffersPayload(prices),
+    });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/billing/checkout") {
+    const session = requireSession(request);
+    verifyCsrf(request, session);
+    const body = requireObject(await readJson(request));
+    const plan = cleanText(body.plan, 32);
+    const url2 = await createCheckoutSession(session.userId, plan);
+    sendJson(response, 200, { url: url2 });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/billing/portal") {
+    const session = requireSession(request);
+    verifyCsrf(request, session);
+    const portalUrl = await createPortalSession(session.userId);
+    sendJson(response, 200, { url: portalUrl });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/billing/confirm") {
+    // Repli quand le webhook n'est pas encore arrivé : l'utilisateur vient de
+    // payer et veut son offre immédiatement, pas après la prochaine livraison.
+    const session = requireSession(request);
+    verifyCsrf(request, session);
+    const body = requireObject(await readJson(request));
+    const checkoutSessionId = cleanText(body.sessionId, 64);
+    if (!/^cs_[A-Za-z0-9]{8,}$/.test(checkoutSessionId)) {
+      throw new HttpError(400, "Référence de session de paiement invalide.", "invalid_session_id");
+    }
+    const synced = await confirmCheckoutSession(session.userId, checkoutSessionId);
+    sendJson(response, 200, { synced, entitlement: resolveEntitlement(session.userId) });
+    return;
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/billing/enterprise") {
+    // Accessible sans compte : la demande doit pouvoir arriver avant
+    // l'inscription. Le quota par IP limite le remplissage automatique.
+    const ip = getClientIp(request);
+    checkRateLimit(`enterprise:${ip}`, 5, 60 * 60 * 1_000);
+    verifyBrowserOrigin(request);
+    const session = getSession(request);
+    const body = requireObject(await readJson(request));
+    const company = cleanText(body.company, 120);
+    if (company.length < 2) {
+      throw new HttpError(400, "Indiquez le nom de votre société.", "invalid_company");
+    }
+    const message = cleanText(body.message, 2_000);
+    if (message.length < 10) {
+      throw new HttpError(
+        400,
+        "Décrivez votre besoin en une dizaine de caractères au moins.",
+        "invalid_message"
+      );
+    }
+    db.prepare(`
+      INSERT INTO enterprise_leads (
+        user_id, company, contact_name, email, phone, volume, message, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      session ? session.userId : null,
+      company,
+      cleanText(body.contactName, 120),
+      validateEmail(body.email),
+      cleanText(body.phone, 40),
+      cleanText(body.volume, 40),
+      message,
+      now()
+    );
+    // La réponse ne reprend aucun champ saisi : elle ne doit rien confirmer qui
+    // puisse servir à énumérer les demandes reçues.
+    sendJson(response, 201, { received: true });
+    return;
+  }
+
+  throw new HttpError(404, "Ressource introuvable.", "not_found");
+}
+
+async function handleStripeWebhook(request, response) {
+  if (!BILLING_WEBHOOKS_ENABLED) {
+    throw new HttpError(
+      503,
+      "Les webhooks Stripe ne sont pas configurés sur ce serveur.",
+      "webhooks_not_configured"
+    );
+  }
+  const raw = await readRawBody(request, 512 * 1_024);
+  const signature = request.headers["stripe-signature"];
+  const stripe = await getStripe();
+  let event;
+  try {
+    // La signature est vérifiée sur les octets bruts : toute re-sérialisation
+    // du JSON invaliderait le HMAC.
+    event = stripe.webhooks.constructEvent(raw, signature, STRIPE_WEBHOOK_SECRET);
+  } catch (error) {
+    throw new HttpError(400, "Signature Stripe invalide.", "invalid_webhook_signature");
+  }
+
+  // `INSERT OR IGNORE` + `changes` : la livraison Stripe est « au moins une
+  // fois », donc le même `event.id` doit être traité une seule fois.
+  const inserted = db.prepare(`
+    INSERT OR IGNORE INTO stripe_events (event_id, type, received_at) VALUES (?, ?, ?)
+  `).run(event.id, event.type, now());
+  if (inserted.changes === 0) {
+    sendJson(response, 200, { received: true, duplicate: true });
+    return;
+  }
+  try {
+    await processStripeEvent(event);
+  } catch (error) {
+    // Le marqueur doit disparaître, sinon Stripe ne réessaiera jamais cet
+    // événement et l'utilisateur resterait sans son offre.
+    db.prepare("DELETE FROM stripe_events WHERE event_id = ?").run(event.id);
+    console.error(`qraft billing: échec du traitement de ${event.type} (${redactSecrets(error.message)}).`);
+    throw new HttpError(502, "Le paiement est enregistré mais l’offre n’a pas pu être appliquée.", "webhook_failed");
+  }
+  sendJson(response, 200, { received: true });
+}
+
+async function confirmCheckoutSession(userId, checkoutSessionId) {
+  const stripe = await getStripe();
+  const session = await stripe.checkout.sessions.retrieve(checkoutSessionId);
+  const customerId = typeof session.customer === "string" ? session.customer : session.customer?.id;
+  // Sans ce contrôle, un utilisateur qui devinerait un `session_id` pourrait
+  // appliquer l'abonnement d'un autre compte au sien.
+  const ownerId = findUserIdByStripeCustomer(customerId);
+  if (ownerId !== userId) return false;
+  const subscriptionId = typeof session.subscription === "string" ? session.subscription : session.subscription?.id;
+  if (!subscriptionId) return false;
+  syncSubscriptionFromStripe(await stripe.subscriptions.retrieve(subscriptionId));
+  return true;
 }
 
 function escapeHtml(value) {

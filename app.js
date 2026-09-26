@@ -38,6 +38,9 @@
     entitlement: null,
     currentRecordId: null,
     trackingUrl: null,
+    offers: null,
+    subscription: null,
+    enterpriseOpen: false,
     contentDirty: false,
     isDirty: false,
     isSaving: false,
@@ -97,6 +100,7 @@
     window.addEventListener("load", () => {
       updatePreview();
       renderHistory();
+      handleBillingReturn();
     }, { once: true });
   }
 
@@ -163,6 +167,18 @@
     elements.quotaModalIntro = $("#quotaModalIntro");
     elements.quotaModalList = $("#quotaModalList");
     elements.quotaModalConfirm = $("#quotaModalConfirm");
+    elements.offersModal = $("#offersModal");
+    elements.offersModalIntro = $("#offersModalIntro");
+    elements.offersNotice = $("#offersNotice");
+    elements.offersGrid = $("#offersGrid");
+    elements.offersManagement = $("#offersManagement");
+    elements.offersManagementText = $("#offersManagementText");
+    elements.openPortalButton = $("#openPortalButton");
+    elements.quotaBannerUpgrade = $("#quotaBannerUpgrade");
+    elements.enterpriseForm = $("#enterpriseFormElement");
+    elements.enterpriseEmail = $("#enterpriseEmail");
+    elements.enterpriseError = $("#enterpriseError");
+    elements.enterpriseCancel = $("#enterpriseCancel");
     elements.authModal = $("#authModal");
     elements.authError = $("#authError");
     elements.loginForm = $("#loginForm");
@@ -317,10 +333,15 @@
     $("#loginButton").addEventListener("click", () => openAuthModal("login"));
     $("#registerButton").addEventListener("click", () => openAuthModal("register"));
     $("#logoutButton").addEventListener("click", logout);
-    elements.planBadge.addEventListener("click", openQuotaModal);
+    elements.planBadge.addEventListener("click", openOffersModal);
+    elements.quotaBannerUpgrade.addEventListener("click", openOffersModal);
     elements.quotaBannerTrim.addEventListener("click", openQuotaModal);
     elements.quotaModalConfirm.addEventListener("click", confirmTrimActiveQrcodes);
     elements.quotaModalList.addEventListener("change", () => syncQuotaModalConfirm());
+    elements.openPortalButton.addEventListener("click", openBillingPortal);
+    elements.enterpriseCancel.addEventListener("click", () => setEnterpriseView(false));
+    elements.enterpriseForm.addEventListener("submit", handleEnterpriseLead);
+    elements.offersGrid.addEventListener("click", handleOfferAction);
     $$("[data-auth-mode]").forEach((button) => {
       button.addEventListener("click", () => setAuthMode(button.dataset.authMode));
     });
@@ -338,6 +359,7 @@
       if (event.key === "Escape") {
         if (!elements.statsModal.hidden) closeModal("statsModal");
         else if (!elements.quotaModal.hidden) closeModal("quotaModal");
+        else if (!elements.offersModal.hidden) closeModal("offersModal");
         else if (!elements.authModal.hidden) closeModal("authModal");
       }
     });
@@ -1281,6 +1303,242 @@
     }
   }
 
+  function formatOfferAmount(offer) {
+    if (offer.quote) return "Sur devis";
+    if (!offer.price) return "Inclus";
+    const amount = new Intl.NumberFormat("fr-FR", {
+      style: "currency",
+      currency: offer.price.currency || "EUR",
+      maximumFractionDigits: 2,
+    }).format((Number(offer.price.amount) || 0) / 100);
+    return `${amount} HT`;
+  }
+
+  function renderOffers() {
+    const catalog = state.offers;
+    if (!catalog) return;
+    const current = state.entitlement?.plan || "decouverte";
+    const configured = Boolean(catalog.configured);
+    const offers = catalog.offers || {};
+    const order = ["decouverte", "pro", "ultra", "entreprise"];
+
+    elements.offersGrid.innerHTML = order.map((key) => {
+      const offer = offers[key];
+      if (!offer) return "";
+      const isCurrent = offer.key === current;
+      const isFeatured = !isCurrent && offer.key === "ultra";
+      const hasPrice = offer.price !== null && offer.price !== undefined;
+      let action = "";
+      if (isCurrent) {
+        action = `<button class="button button-light offer-current" type="button" disabled>Offre actuelle</button>`;
+      } else if (offer.quote) {
+        action = `<button class="button button-dark" type="button" data-offer-action="enterprise">Demander un devis</button>`;
+      } else if (hasPrice) {
+        action = `<button class="button ${isFeatured ? "button-primary" : "button-dark"}" type="button" data-offer-action="buy" data-offer-plan="${escapeHtml(offer.key)}">Choisir ${escapeHtml(offer.label)}</button>`;
+      } else if (offer.key === "decouverte") {
+        action = `<button class="button button-light" type="button" disabled>Incluse par défaut</button>`;
+      } else {
+        action = `<button class="button button-light" type="button" disabled>Bientôt disponible</button>`;
+      }
+      const note = offer.key === "decouverte"
+        ? "Sans carte bancaire, sans engagement."
+        : (hasPrice ? "TVA calculée par Stripe selon votre pays. Résiliable à tout mois." : "");
+      return `
+        <article class="offer-card${isCurrent ? " is-current" : ""}${isFeatured ? " is-featured" : ""}" data-offer-key="${escapeHtml(offer.key)}">
+          ${isFeatured ? `<span class="offer-flag">La plus complète</span>` : ""}
+          <span class="offer-name">${escapeHtml(offer.label)}</span>
+          <p class="offer-price">${formatOfferAmount(offer)} ${hasPrice ? "<span>/ mois</span>" : ""}</p>
+          <ul class="offer-features">
+            ${(offer.features || []).map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
+          </ul>
+          ${note ? `<p class="offer-note">${escapeHtml(note)}</p>` : ""}
+          ${action}
+        </article>
+      `;
+    }).join("");
+
+    if (!configured) {
+      showOffersNotice("La facturation n’est pas encore activée sur cette installation. Les offres restent consultables, mais le paiement est indisponible.");
+    } else if (!state.user) {
+      showOffersNotice("Connectez-vous pour souscrire à une offre payante.");
+    }
+
+    const summary = state.subscription;
+    const hasPaidPlan = summary && summary.status && summary.plan !== "decouverte";
+    elements.offersManagement.hidden = !(summary?.hasBillingAccount && hasPaidPlan);
+    if (!elements.offersManagement.hidden) {
+      elements.offersManagementText.textContent = buildSubscriptionSummaryText(summary);
+    }
+  }
+
+  function buildSubscriptionSummaryText(summary) {
+    if (!summary) return "";
+    const plan = planLabelFor(summary.plan);
+    if (summary.cancelAtPeriodEnd && summary.currentPeriodEnd) {
+      return `Abonnement ${plan} · se termine le ${formatDate(new Date(summary.currentPeriodEnd).toISOString())}.`;
+    }
+    if (summary.status === "past_due" || summary.status === "unpaid") {
+      return `Abonnement ${plan} · paiement en attente, régularisez votre carte depuis l’espace de facturation.`;
+    }
+    if (summary.currentPeriodEnd) {
+      return `Abonnement ${plan} · renouvellement le ${formatDate(new Date(summary.currentPeriodEnd).toISOString())}.`;
+    }
+    return `Abonnement ${plan}.`;
+  }
+
+  function planLabelFor(plan) {
+    return String(plan || "decouverte").replace(/^./, (letter) => letter.toUpperCase());
+  }
+
+  function showOffersNotice(message) {
+    elements.offersNotice.textContent = message;
+    elements.offersNotice.hidden = !message;
+  }
+
+  function setEnterpriseView(open) {
+    state.enterpriseOpen = open;
+    elements.enterpriseForm.hidden = !open;
+    elements.offersGrid.hidden = open;
+    // `renderOffers` recalcule cette visibilité à chaque ouverture ; seul le
+    // passage au formulaire doit la masquer.
+    if (open) elements.offersManagement.hidden = true;
+    if (open) {
+      showOffersNotice("");
+      if (state.user?.email && !elements.enterpriseEmail.value) {
+        elements.enterpriseEmail.value = state.user.email;
+      }
+    }
+  }
+
+  async function openOffersModal() {
+    showOffersNotice("");
+    setEnterpriseView(false);
+    elements.offersGrid.hidden = false;
+    if (!state.offers) {
+      elements.offersModal.hidden = false;
+      document.body.classList.add("modal-open");
+      try {
+        const result = await api("/api/billing/offers");
+        state.offers = result;
+      } catch (error) {
+        showOffersNotice(error.message || "Impossible de charger les offres.");
+        state.offers = { configured: false, offers: {} };
+      }
+    }
+    renderOffers();
+    elements.offersModal.hidden = false;
+    document.body.classList.add("modal-open");
+  }
+
+  async function handleOfferAction(event) {
+    const button = event.target.closest("button[data-offer-action]");
+    if (!button) return;
+    const action = button.dataset.offerAction;
+    if (action === "enterprise") {
+      setEnterpriseView(true);
+      elements.enterpriseCompany.focus();
+      return;
+    }
+    if (action === "buy") {
+      await startCheckout(button.dataset.offerPlan, button);
+    }
+  }
+
+  async function startCheckout(plan, button) {
+    if (!state.user) {
+      closeModal("offersModal");
+      openAuthModal("register", "Créez votre compte pour souscrire à une offre.");
+      return;
+    }
+    const label = button.textContent;
+    button.disabled = true;
+    button.textContent = "Redirection…";
+    try {
+      const result = await api("/api/billing/checkout", { method: "POST", body: { plan } });
+      window.location.assign(result.url);
+    } catch (error) {
+      button.disabled = false;
+      button.textContent = label;
+      if (error.status === 409) {
+        showOffersNotice(error.message);
+        return;
+      }
+      showToast(error.message || "Impossible de démarrer le paiement.");
+    }
+  }
+
+  async function openBillingPortal() {
+    try {
+      const result = await api("/api/billing/portal", { method: "POST" });
+      window.location.assign(result.url);
+    } catch (error) {
+      showToast(error.message || "Impossible d’ouvrir l’espace de facturation.");
+    }
+  }
+
+  async function handleEnterpriseLead(event) {
+    event.preventDefault();
+    elements.enterpriseError.hidden = true;
+    const submit = $("#enterpriseSubmit", elements.enterpriseForm);
+    submit.disabled = true;
+    submit.textContent = "Envoi…";
+    try {
+      await api("/api/billing/enterprise", {
+        method: "POST",
+        body: {
+          company: value("enterpriseCompany"),
+          contactName: value("enterpriseContactName"),
+          email: value("enterpriseEmail"),
+          phone: value("enterprisePhone"),
+          volume: value("enterpriseVolume"),
+          message: value("enterpriseMessage"),
+        },
+      });
+      closeModal("offersModal");
+      showToast("Demande envoyée. Nous revenons vers vous sous deux jours ouvrés.");
+    } catch (error) {
+      elements.enterpriseError.textContent = error.message || "Impossible d’envoyer la demande.";
+      elements.enterpriseError.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = "Envoyer la demande";
+    }
+  }
+
+  // Retour de Stripe Checkout : `session_id` est resynchronisé côté serveur pour
+  // que l'offre soit visible immédiatement, sans attendre le webhook.
+  async function handleBillingReturn() {
+    const params = new URLSearchParams(window.location.search);
+    const billing = params.get("billing");
+    if (!billing) return;
+    const cleanUrl = `${window.location.pathname}${window.location.hash}`;
+    window.history.replaceState({}, "", cleanUrl);
+
+    if (billing === "cancelled") {
+      showToast("Paiement annulé. Aucun montant n’a été débité.");
+      return;
+    }
+    if (billing !== "success") return;
+    const sessionId = params.get("session_id");
+    if (!sessionId) return;
+    if (!state.user) {
+      showToast("Paiement confirmé. Reconnectez-vous pour retrouver votre offre.");
+      return;
+    }
+    try {
+      const result = await api("/api/billing/confirm", { method: "POST", body: { sessionId } });
+      if (!result.synced) {
+        showToast("Paiement confirmé, votre offre arrive sous quelques secondes.");
+        return;
+      }
+      await loadLibrary();
+      renderAuthState();
+      showToast(`Paiement confirmé — vous êtes désormais sur l’offre ${result.entitlement.label}.`);
+    } catch (error) {
+      showToast(error.message || "Paiement confirmé, mais l’offre n’a pas pu être appliquée. Contactez le support.");
+    }
+  }
+
   function loadHistoryItem(item) {
     state.editRevision += 1;
     state.foreground = item.foreground || "#101b33";
@@ -1647,6 +1905,7 @@
     state.user = result.user;
     state.csrfToken = result.csrfToken;
     state.entitlement = result.entitlement || null;
+    state.subscription = result.subscription || null;
     state.legacyHistory = loadLegacyHistoryForUser(result.user.id);
     renderAuthState();
   }
@@ -1678,6 +1937,7 @@
     state.user = null;
     state.csrfToken = null;
     state.entitlement = null;
+    state.subscription = null;
     state.history = [];
     state.legacyHistory = [];
     state.activeStatsId = null;
@@ -1689,6 +1949,7 @@
     }
     if (!elements.statsModal.hidden) closeModal("statsModal");
     if (!elements.quotaModal.hidden) closeModal("quotaModal");
+    if (!elements.offersModal.hidden) closeModal("offersModal");
     if (!elements.authModal.hidden) closeModal("authModal");
     clearEditor();
     renderAuthState();
@@ -1988,9 +2249,10 @@
     const modal = document.getElementById(id);
     if (modal) modal.hidden = true;
     if (id === "statsModal") state.activeStatsId = null;
-    if (elements.authModal.hidden && elements.statsModal.hidden && elements.quotaModal.hidden) {
-      document.body.classList.remove("modal-open");
-    }
+    if (id === "offersModal") state.enterpriseOpen = false;
+    const allClosed = [elements.authModal, elements.statsModal, elements.quotaModal, elements.offersModal]
+      .every((modal) => modal.hidden);
+    if (allClosed) document.body.classList.remove("modal-open");
   }
 
   function setFormBusy(form, busy, busyLabel) {

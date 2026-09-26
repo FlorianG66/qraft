@@ -38,7 +38,7 @@
             </div>
             <div class="user-actions" id="userActions" hidden>
               <span class="user-chip" title="Compte connecté"><span class="user-avatar" id="userAvatar">Q</span><span id="userName">Mon compte</span></span>
-              <button class="plan-badge" id="planBadge" type="button" title="Votre offre">Découverte</button>
+              <button class="plan-badge" id="planBadge" type="button" title="Changer d’offre">Découverte</button>
               <button class="auth-link" id="logoutButton" type="button">Déconnexion</button>
             </div>
           </div>
@@ -52,6 +52,7 @@
           <p id="quotaBannerDetail"></p>
         </div>
         <div class="quota-banner-actions">
+          <button class="button button-primary button-small" type="button" id="quotaBannerUpgrade">Voir les offres</button>
           <button class="button button-dark button-small" type="button" id="quotaBannerTrim">Réduire mes QR codes actifs</button>
         </div>
       </div>
@@ -471,6 +472,59 @@
         </form>
         <p class="form-error" id="authError" role="alert" hidden></p>
         <p class="security-note"><span>✓</span> Mot de passe haché · session sécurisée · données isolées par compte</p>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="offersModal" hidden>
+      <section class="modal-card offers-modal-card" role="dialog" aria-modal="true" aria-labelledby="offersModalTitle">
+        <button class="modal-close" type="button" data-close-modal="offersModal" aria-label="Fermer">×</button>
+        <span class="section-kicker">ABONNEMENTS MENSUELS</span>
+        <h2 id="offersModalTitle">Choisissez votre offre</h2>
+        <p class="modal-intro" id="offersModalIntro">Résiliable à tout mois, sans engagement et sans frais de dossier.</p>
+        <p class="offers-notice" id="offersNotice" hidden></p>
+        <div class="offers-grid" id="offersGrid"></div>
+
+        <div class="offers-management" id="offersManagement" hidden>
+          <p id="offersManagementText"></p>
+          <button class="button button-light button-small" type="button" id="openPortalButton">Gérer mon abonnement</button>
+        </div>
+
+        <form class="enterprise-form" id="enterpriseFormElement" hidden>
+          <span class="section-kicker">DEMANDE DE DEVIS</span>
+          <h3 id="enterpriseTitle">Parlez-nous de vos besoins</h3>
+          <p class="modal-intro">Offre sur mesure : volume illimité, jusqu’à 730 jours de statistiques, support prioritaire. Nous répondons sous deux jours ouvrés.</p>
+          <div class="enterprise-grid">
+            <div class="field-group">
+              <label for="enterpriseCompany">Société</label>
+              <input id="enterpriseCompany" name="company" type="text" maxlength="120" required />
+            </div>
+            <div class="field-group">
+              <label for="enterpriseContactName">Votre nom</label>
+              <input id="enterpriseContactName" name="contactName" type="text" maxlength="120" autocomplete="name" />
+            </div>
+            <div class="field-group">
+              <label for="enterpriseEmail">E-mail professionnel</label>
+              <input id="enterpriseEmail" name="email" type="email" maxlength="254" autocomplete="email" required />
+            </div>
+            <div class="field-group">
+              <label for="enterprisePhone">Téléphone</label>
+              <input id="enterprisePhone" name="phone" type="tel" maxlength="40" autocomplete="tel" />
+            </div>
+          </div>
+          <div class="field-group">
+            <label for="enterpriseVolume">Volume de QR codes prévu</label>
+            <input id="enterpriseVolume" name="volume" type="text" maxlength="40" placeholder="ex. 5 000" />
+          </div>
+          <div class="field-group">
+            <label for="enterpriseMessage">Votre besoin</label>
+            <textarea id="enterpriseMessage" name="message" rows="4" maxlength="2000" required placeholder="Usage, secteurs, délais…"></textarea>
+          </div>
+          <p class="enterprise-error" id="enterpriseError" role="alert" hidden></p>
+          <div class="enterprise-actions">
+            <button class="button button-light" type="button" id="enterpriseCancel">Retour aux offres</button>
+            <button class="button button-dark" type="submit" id="enterpriseSubmit">Envoyer la demande</button>
+          </div>
+        </form>
       </section>
     </div>
 
