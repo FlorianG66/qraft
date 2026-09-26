@@ -5,11 +5,29 @@
   const MAX_LEGACY_IMPORT = 50;
   const MAX_LEGACY_ATTEMPTS = 3;
   const defaultLink = "https://qraft.example/hello";
+  const MAX_MARGIN = 8;
+  const LOGO_MAX_EDGE = 256;
+  const LOGO_MAX_DATA_LENGTH = 220_000;
+  const LOGO_SIZE_MIN_PCT = 18;
+  const LOGO_SIZE_MAX_PCT = 30;
+  const LOGO_SIZE_DEFAULT_PCT = 22;
+  const LOGO_MIN_SPAN = 5;
+  const LOGO_ACCEPTED_TYPES = ["image/png", "image/jpeg", "image/webp", "image/svg+xml"];
+  const defaultStyle = Object.freeze({
+    moduleShape: "square",
+    eyeShape: "square",
+    margin: 4,
+    logoSizePct: LOGO_SIZE_DEFAULT_PCT,
+    gradient: null,
+  });
 
   const state = {
     mode: "link",
     foreground: "#101b33",
     background: "#ffffff",
+    style: { ...defaultStyle },
+    logo: null,
+    logoName: "",
     currentQr: null,
     currentPayload: "",
     currentLabel: "",
@@ -17,6 +35,7 @@
     legacyHistory: [],
     user: null,
     csrfToken: null,
+    entitlement: null,
     currentRecordId: null,
     trackingUrl: null,
     contentDirty: false,
@@ -92,6 +111,27 @@
     elements.foregroundValue = $("#foregroundValue");
     elements.backgroundValue = $("#backgroundValue");
     elements.colorCount = $("#colorCount");
+    elements.marginRange = $("#marginRange");
+    elements.marginValue = $("#marginValue");
+    elements.marginHint = $("#marginHint");
+    elements.gradientToggle = $("#gradientToggle");
+    elements.gradientControls = $("#gradientControls");
+    elements.gradientFrom = $("#gradientFrom");
+    elements.gradientTo = $("#gradientTo");
+    elements.gradientFromValue = $("#gradientFromValue");
+    elements.gradientToValue = $("#gradientToValue");
+    elements.gradientAngle = $("#gradientAngle");
+    elements.gradientAngleValue = $("#gradientAngleValue");
+    elements.logoInput = $("#logoInput");
+    elements.logoDrop = $("#logoDrop");
+    elements.logoPreview = $("#logoPreview");
+    elements.logoThumb = $("#logoThumb");
+    elements.logoName = $("#logoName");
+    elements.logoRemove = $("#logoRemove");
+    elements.logoSize = $("#logoSize");
+    elements.logoSizeValue = $("#logoSizeValue");
+    elements.logoSizeHint = $("#logoSizeHint");
+    elements.styleWarning = $("#styleWarning");
     elements.previewTypeLabel = $("#previewTypeLabel");
     elements.previewLabel = $("#previewLabel");
     elements.qrCanvas = $("#qrCanvas");
@@ -107,6 +147,22 @@
     elements.userActions = $("#userActions");
     elements.userName = $("#userName");
     elements.userAvatar = $("#userAvatar");
+    elements.planBadge = $("#planBadge");
+    elements.quotaBanner = $("#quotaBanner");
+    elements.quotaBannerTitle = $("#quotaBannerTitle");
+    elements.quotaBannerDetail = $("#quotaBannerDetail");
+    elements.quotaBannerTrim = $("#quotaBannerTrim");
+    elements.quotaMeters = $("#quotaMeters");
+    elements.quotaStoredMeter = $("#quotaStoredMeter");
+    elements.quotaStoredValue = $("#quotaStoredValue");
+    elements.quotaStoredBar = $("#quotaStoredBar");
+    elements.quotaActiveMeter = $("#quotaActiveMeter");
+    elements.quotaActiveValue = $("#quotaActiveValue");
+    elements.quotaActiveBar = $("#quotaActiveBar");
+    elements.quotaModal = $("#quotaModal");
+    elements.quotaModalIntro = $("#quotaModalIntro");
+    elements.quotaModalList = $("#quotaModalList");
+    elements.quotaModalConfirm = $("#quotaModalConfirm");
     elements.authModal = $("#authModal");
     elements.authError = $("#authError");
     elements.loginForm = $("#loginForm");
@@ -157,6 +213,93 @@
 
     $(".custom-color").addEventListener("click", () => elements.foregroundColor.focus());
     $("#resetButton").addEventListener("click", resetBuilder);
+    $("#resetStyle").addEventListener("click", resetStyle);
+
+    $$("[data-module-shape]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.style = { ...state.style, moduleShape: button.dataset.moduleShape };
+        markEditorDirty(false);
+        syncStyleControls();
+        updatePreview();
+      });
+    });
+
+    $$("[data-eye-shape]").forEach((button) => {
+      button.addEventListener("click", () => {
+        state.style = { ...state.style, eyeShape: button.dataset.eyeShape };
+        markEditorDirty(false);
+        syncStyleControls();
+        updatePreview();
+      });
+    });
+
+    elements.marginRange.addEventListener("input", () => {
+      state.style = { ...state.style, margin: Number(elements.marginRange.value) };
+      markEditorDirty(false);
+      syncStyleControls();
+      updatePreview();
+    });
+
+    elements.logoSize.addEventListener("input", () => {
+      state.style = { ...state.style, logoSizePct: Number(elements.logoSize.value) };
+      markEditorDirty(false);
+      syncStyleControls();
+      updatePreview();
+    });
+
+    elements.gradientToggle.addEventListener("change", () => {
+      state.style = {
+        ...state.style,
+        gradient: elements.gradientToggle.checked ? {
+          from: elements.gradientFrom.value,
+          to: elements.gradientTo.value,
+          angle: Number(elements.gradientAngle.value),
+        } : null,
+      };
+      markEditorDirty(false);
+      syncStyleControls();
+      updatePreview();
+    });
+
+    [elements.gradientFrom, elements.gradientTo].forEach((input) => {
+      input.addEventListener("input", () => {
+        state.style = {
+          ...state.style,
+          gradient: {
+            from: elements.gradientFrom.value,
+            to: elements.gradientTo.value,
+            angle: state.style.gradient ? state.style.gradient.angle : Number(elements.gradientAngle.value),
+          },
+        };
+        markEditorDirty(false);
+        syncStyleControls();
+        updatePreview();
+      });
+    });
+
+    elements.gradientAngle.addEventListener("input", () => {
+      state.style = {
+        ...state.style,
+        gradient: {
+          from: state.style.gradient ? state.style.gradient.from : elements.gradientFrom.value,
+          to: state.style.gradient ? state.style.gradient.to : elements.gradientTo.value,
+          angle: Number(elements.gradientAngle.value),
+        },
+      };
+      markEditorDirty(false);
+      syncStyleControls();
+      updatePreview();
+    });
+
+    elements.logoDrop.addEventListener("click", () => elements.logoInput.click());
+    elements.logoInput.addEventListener("change", handleLogoSelection);
+    elements.logoRemove.addEventListener("click", () => {
+      clearLogo();
+      markEditorDirty(false);
+      syncStyleControls();
+      updatePreview();
+    });
+
     elements.saveButton.addEventListener("click", saveCurrentQr);
     $("#downloadPng").addEventListener("click", downloadPng);
     $("#downloadSvg").addEventListener("click", downloadSvg);
@@ -174,6 +317,10 @@
     $("#loginButton").addEventListener("click", () => openAuthModal("login"));
     $("#registerButton").addEventListener("click", () => openAuthModal("register"));
     $("#logoutButton").addEventListener("click", logout);
+    elements.planBadge.addEventListener("click", openQuotaModal);
+    elements.quotaBannerTrim.addEventListener("click", openQuotaModal);
+    elements.quotaModalConfirm.addEventListener("click", confirmTrimActiveQrcodes);
+    elements.quotaModalList.addEventListener("change", () => syncQuotaModalConfirm());
     $$("[data-auth-mode]").forEach((button) => {
       button.addEventListener("click", () => setAuthMode(button.dataset.authMode));
     });
@@ -190,6 +337,7 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         if (!elements.statsModal.hidden) closeModal("statsModal");
+        else if (!elements.quotaModal.hidden) closeModal("quotaModal");
         else if (!elements.authModal.hidden) closeModal("authModal");
       }
     });
@@ -248,15 +396,198 @@
     elements.previewTypeLabel.textContent = state.mode === "link" ? "LINK" : "VCARD";
     elements.previewLabel.textContent = label;
 
-    state.currentQr = createQr(encodedPayload);
+    state.currentQr = createQr(encodedPayload, { errorCorrectionLevel: state.logo ? "H" : "M" });
     if (state.currentQr) {
-      drawQr(elements.qrCanvas, state.currentQr, 1024, state.foreground, state.background);
+      drawQr(elements.qrCanvas, state.currentQr, 1024, currentRenderOptions());
     } else {
       drawFallback(elements.qrCanvas, state.foreground, state.background);
     }
 
     updateColorLabels();
+    syncStyleControls();
     updateSaveState();
+  }
+
+  function currentRenderOptions() {
+    return {
+      style: state.style,
+      foreground: state.foreground,
+      background: state.background,
+      logo: state.logo,
+    };
+  }
+
+  function clearLogo() {
+    state.logo = null;
+    state.logoName = "";
+    elements.logoInput.value = "";
+  }
+
+  function resetStyle() {
+    state.style = { ...defaultStyle };
+    clearLogo();
+    markEditorDirty(false);
+    syncStyleControls();
+    updatePreview();
+    showToast("Forme, marge et logo ont ǸtǸ rǸinitialisǸs.");
+  }
+
+  function syncStyleControls() {
+    const style = normalizeStyle(state.style);
+
+    $$("[data-module-shape]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.moduleShape === style.moduleShape);
+    });
+    $$("[data-eye-shape]").forEach((button) => {
+      button.classList.toggle("active", button.dataset.eyeShape === style.eyeShape);
+    });
+
+    elements.marginRange.value = String(style.margin);
+    elements.marginValue.textContent = String(style.margin);
+    const marginCopy = style.margin === 0
+      ? "0 module — le code risque de ne pas être détecté."
+      : style.margin < 2
+        ? `${style.margin} module — en dessous de 2, la détection devient aléatoire.`
+        : style.margin >= 4
+          ? `${style.margin} modules — marge recommandée pour un scan fiable.`
+          : `${style.margin} modules — acceptable, 4 reste plus sûr.`;
+    elements.marginHint.textContent = marginCopy;
+    elements.marginHint.classList.toggle("is-alert", style.margin < 2);
+
+    const hasGradient = Boolean(style.gradient);
+    elements.gradientToggle.checked = hasGradient;
+    elements.gradientControls.hidden = !hasGradient;
+    if (hasGradient) {
+      elements.gradientFrom.value = style.gradient.from;
+      elements.gradientTo.value = style.gradient.to;
+      elements.gradientAngle.value = String(style.gradient.angle);
+      elements.gradientFromValue.textContent = style.gradient.from.toUpperCase();
+      elements.gradientToValue.textContent = style.gradient.to.toUpperCase();
+      elements.gradientAngleValue.textContent = `${style.gradient.angle}°`;
+    }
+
+    elements.logoPreview.hidden = !state.logo;
+    elements.logoDrop.hidden = Boolean(state.logo);
+    if (state.logo) {
+      elements.logoThumb.src = state.logo;
+      elements.logoName.textContent = state.logoName || "logo";
+    } else {
+      elements.logoThumb.removeAttribute("src");
+      elements.logoName.textContent = "";
+    }
+
+    const moduleCount = state.currentQr ? state.currentQr.getModuleCount() : 0;
+    const span = moduleCount ? logoSpanFor(moduleCount, style.logoSizePct) : 0;
+    elements.logoSize.value = String(style.logoSizePct);
+    elements.logoSize.disabled = !state.logo;
+    elements.logoSizeValue.textContent = state.logo && span ? `${style.logoSizePct} % · ${span} modules` : `${style.logoSizePct} %`;
+    elements.logoSizeHint.textContent = !state.logo || !span
+      ? "Ajoutez un logo pour régler sa taille."
+      : style.logoSizePct >= 28
+        ? `${span} modules sur ${moduleCount} : au-delà, la lecture peut devenir aléatoire.`
+        : `${span} modules sur ${moduleCount} — agrandissez si le logo reste lisible.`;
+    elements.logoSizeHint.classList.toggle("is-alert", Boolean(state.logo && span) && style.logoSizePct >= 28);
+
+    const warnings = [];
+    if (state.logo && style.margin < 2) {
+      warnings.push("Un logo avec moins de 2 modules de marge : augmentez la marge pour éviter les échecs de scan.");
+    }
+    if (state.logo && style.moduleShape === "dot") {
+      warnings.push("Logo + modules en point : préférez des modules carrés ou arrondis pour une lecture plus fiable.");
+    }
+    if (state.logo && style.logoSizePct >= 28) {
+      warnings.push("Logo très agrandi : la zone blanche au centre dégrade la détection, restez sur un scan de test.");
+    }
+    if (hasGradient) {
+      warnings.push("Un dégradé reste moins robuste qu'une couleur pleine en cas d'impression à l'encre.");
+    }
+    elements.styleWarning.hidden = warnings.length === 0;
+    elements.styleWarning.textContent = warnings.join(" ");
+  }
+
+  function readFileAsDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.addEventListener("load", () => resolve(String(reader.result || "")));
+      reader.addEventListener("error", () => reject(new Error("read_failed")));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function loadImageElement(dataUrl) {
+    return new Promise((resolve, reject) => {
+      const image = new Image();
+      image.addEventListener("load", () => resolve(image));
+      image.addEventListener("error", () => reject(new Error("decode_failed")));
+      image.src = dataUrl;
+    });
+  }
+
+  async function handleLogoSelection() {
+    const file = elements.logoInput.files && elements.logoInput.files[0];
+    if (!file) return;
+    if (!LOGO_ACCEPTED_TYPES.includes(file.type)) {
+      elements.logoInput.value = "";
+      showToast("Format non pris en charge — utilisez PNG, JPG, WEBP ou SVG.");
+      return;
+    }
+    if (file.size > 4 * 1024 * 1024) {
+      elements.logoInput.value = "";
+      showToast("Image trop lourde — 4 Mo maximum.");
+      return;
+    }
+
+    let dataUrl;
+    try {
+      dataUrl = await readFileAsDataUrl(file);
+    } catch {
+      elements.logoInput.value = "";
+      showToast("Impossible de lire cette image.");
+      return;
+    }
+
+    let image;
+    try {
+      image = await loadImageElement(dataUrl);
+    } catch {
+      elements.logoInput.value = "";
+      showToast("Image invalide ou corrompue.");
+      return;
+    }
+
+    const ratio = Math.min(LOGO_MAX_EDGE / image.naturalWidth, LOGO_MAX_EDGE / image.naturalHeight, 1);
+    const width = Math.max(1, Math.round(image.naturalWidth * ratio));
+    const height = Math.max(1, Math.round(image.naturalHeight * ratio));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d");
+    context.imageSmoothingQuality = "high";
+    context.drawImage(image, 0, 0, width, height);
+
+    let encoded = canvas.toDataURL("image/png");
+    if (encoded.length > LOGO_MAX_DATA_LENGTH) {
+      const smaller = Math.max(24, Math.round(LOGO_MAX_EDGE * 0.5));
+      const reduced = Math.min(smaller / width, smaller / height, 1);
+      canvas.width = Math.max(1, Math.round(width * reduced));
+      canvas.height = Math.max(1, Math.round(height * reduced));
+      const reducedContext = canvas.getContext("2d");
+      reducedContext.imageSmoothingQuality = "high";
+      reducedContext.drawImage(image, 0, 0, canvas.width, canvas.height);
+      encoded = canvas.toDataURL("image/png");
+    }
+    if (encoded.length > LOGO_MAX_DATA_LENGTH) {
+      elements.logoInput.value = "";
+      showToast("Logo trop détaillé — il alourdirait trop l’enregistrement.");
+      return;
+    }
+
+    state.logo = encoded;
+    state.logoName = file.name || "logo";
+    markEditorDirty(false);
+    syncStyleControls();
+    updatePreview();
+    showToast("Logo ajouté — le niveau de correction est passé en H.");
   }
 
   function getLinkPayload() {
@@ -308,14 +639,14 @@
     return lines.join("\r\n");
   }
 
-  function createQr(payload) {
+  function createQr(payload, options = {}) {
     if (!payload || typeof window.qrcode !== "function") return null;
     try {
       if (typeof TextEncoder === "function" && !window.qrcode.__qraftUtf8) {
         window.qrcode.stringToBytes = (text) => Array.from(new TextEncoder().encode(text));
         window.qrcode.__qraftUtf8 = true;
       }
-      const qr = window.qrcode(0, "M");
+      const qr = window.qrcode(0, options.errorCorrectionLevel || "M");
       qr.addData(payload);
       qr.make();
       return qr;
@@ -325,32 +656,242 @@
     }
   }
 
-  function drawQr(canvas, qr, size, foreground, background) {
+  function normalizeStyle(rawStyle) {
+    const source = rawStyle && typeof rawStyle === "object" ? rawStyle : {};
+    const gradientSource = source.gradient && typeof source.gradient === "object" ? source.gradient : null;
+    const angle = Number(gradientSource && gradientSource.angle);
+    const isHexColor = (candidate) => /^#[0-9a-f]{6}$/i.test(String(candidate || ""));
+    return {
+      moduleShape: ["square", "rounded", "dot"].includes(source.moduleShape)
+        ? source.moduleShape
+        : defaultStyle.moduleShape,
+      eyeShape: ["square", "rounded", "leaf"].includes(source.eyeShape)
+        ? source.eyeShape
+        : defaultStyle.eyeShape,
+      margin: Number.isInteger(source.margin)
+        ? Math.min(Math.max(source.margin, 0), MAX_MARGIN)
+        : defaultStyle.margin,
+      logoSizePct: Number.isFinite(Number(source.logoSizePct))
+        ? Math.min(Math.max(Math.round(Number(source.logoSizePct)), LOGO_SIZE_MIN_PCT), LOGO_SIZE_MAX_PCT)
+        : defaultStyle.logoSizePct,
+      gradient: gradientSource && isHexColor(gradientSource.from) && isHexColor(gradientSource.to) ? {
+        from: String(gradientSource.from).toLowerCase(),
+        to: String(gradientSource.to).toLowerCase(),
+        angle: Number.isFinite(angle) ? ((Math.round(angle) % 360) + 360) % 360 : 135,
+      } : null,
+    };
+  }
+
+  const logoImages = new Map();
+  const MAX_LOGO_IMAGE_CACHE = 40;
+
+  function getLogoImage(dataUrl) {
+    if (!dataUrl) return null;
+    const cached = logoImages.get(dataUrl);
+    if (cached) return cached.ready ? cached.image : null;
+
+    const entry = { ready: false, image: null };
+    logoImages.set(dataUrl, entry);
+    while (logoImages.size > MAX_LOGO_IMAGE_CACHE) {
+      const oldest = logoImages.keys().next().value;
+      if (oldest === dataUrl) break;
+      logoImages.delete(oldest);
+    }
+
+    const image = new Image();
+    image.addEventListener("load", () => {
+      entry.image = image;
+      entry.ready = true;
+      updatePreview();
+      renderHistory();
+    });
+    image.src = dataUrl;
+    return null;
+  }
+
+  function logoSpanFor(moduleCount, percent) {
+    const ratio = Math.min(Math.max(Number(percent) || LOGO_SIZE_DEFAULT_PCT, LOGO_SIZE_MIN_PCT), LOGO_SIZE_MAX_PCT) / 100;
+    const target = Math.floor(moduleCount * ratio);
+    const odd = target % 2 === 0 ? target - 1 : target;
+    const ceiling = moduleCount - 16;
+    return Math.min(Math.max(odd, LOGO_MIN_SPAN), Math.max(ceiling, LOGO_MIN_SPAN));
+  }
+
+  function buildQrPlan(qr, style, hasLogo) {
+    const moduleCount = qr.getModuleCount();
+    const margin = style.margin;
+    const eyes = [
+      { row: 0, column: 0 },
+      { row: 0, column: moduleCount - 7 },
+      { row: moduleCount - 7, column: 0 },
+    ];
+
+    let logoBox = null;
+    if (hasLogo) {
+      const span = logoSpanFor(moduleCount, style.logoSizePct);
+      const start = Math.floor((moduleCount - span) / 2);
+      logoBox = { row: start, column: start, span };
+    }
+
+    const isInLogo = (row, column) => Boolean(
+      logoBox &&
+      row >= logoBox.row && row < logoBox.row + logoBox.span &&
+      column >= logoBox.column && column < logoBox.column + logoBox.span,
+    );
+    const isInEye = (row, column) => eyes.some((eye) =>
+      row >= eye.row && row < eye.row + 7 && column >= eye.column && column < eye.column + 7);
+
+    const cells = [];
+    for (let row = 0; row < moduleCount; row += 1) {
+      for (let column = 0; column < moduleCount; column += 1) {
+        if (isInEye(row, column) || isInLogo(row, column)) continue;
+        if (qr.isDark(row, column)) cells.push([row, column]);
+      }
+    }
+
+    return { moduleCount, margin, totalModules: moduleCount + margin * 2, eyes, cells, logoBox };
+  }
+
+  function squarePath(x, y, size) {
+    return `M${x} ${y}h${size}v${size}h${-size}z`;
+  }
+
+  function roundedPath(x, y, size, radius) {
+    const r = Math.max(0, Math.min(radius, size / 2));
+    if (r <= 0) return squarePath(x, y, size);
+    const side = size - 2 * r;
+    return `M${x + r} ${y}h${side}a${r} ${r} 0 0 1 ${r} ${r}v${side}` +
+      `a${r} ${r} 0 0 1 ${-r} ${r}h${-side}a${r} ${r} 0 0 1 ${-r} ${-r}v${-side}` +
+      `a${r} ${r} 0 0 1 ${r} ${-r}z`;
+  }
+
+  function circlePath(x, y, size) {
+    const radius = size * 0.46;
+    const centerX = x + size / 2;
+    const centerY = y + size / 2;
+    return `M${centerX - radius} ${centerY}a${radius} ${radius} 0 1 0 ${2 * radius} 0` +
+      `a${radius} ${radius} 0 1 0 ${-2 * radius} 0z`;
+  }
+
+  function modulePath(x, y, size, shape) {
+    if (shape === "dot") return circlePath(x, y, size);
+    if (shape === "rounded") return roundedPath(x, y, size, size * 0.32);
+    return squarePath(x, y, size);
+  }
+
+  function eyePaths(plan, style, toPixel, unit) {
+    const outer = [];
+    const background = [];
+    const inner = [];
+    const outerRadius = style.eyeShape === "leaf" ? 2.4 : 1.5;
+    const innerRadius = style.eyeShape === "leaf" ? 1.1 : 0.7;
+
+    for (const eye of plan.eyes) {
+      const x = eye.column + plan.margin;
+      const y = eye.row + plan.margin;
+      if (style.eyeShape === "square") {
+        outer.push(squarePath(toPixel(x), toPixel(y), 7 * unit));
+        background.push(squarePath(toPixel(x + 1), toPixel(y + 1), 5 * unit));
+        inner.push(squarePath(toPixel(x + 2), toPixel(y + 2), 3 * unit));
+        continue;
+      }
+      outer.push(roundedPath(toPixel(x), toPixel(y), 7 * unit, outerRadius * unit));
+      background.push(roundedPath(toPixel(x + 1), toPixel(y + 1), 5 * unit, outerRadius * 0.8 * unit));
+      inner.push(roundedPath(toPixel(x + 2), toPixel(y + 2), 3 * unit, innerRadius * unit));
+    }
+    return { outer, background, inner };
+  }
+
+  function logoGeometry(plan) {
+    if (!plan.logoBox) return null;
+    return {
+      x: plan.logoBox.column + plan.margin,
+      y: plan.logoBox.row + plan.margin,
+      size: plan.logoBox.span,
+    };
+  }
+
+  function gradientLine(angle, total) {
+    const radians = (angle * Math.PI) / 180;
+    const dx = (Math.cos(radians) * total) / 2;
+    const dy = (Math.sin(radians) * total) / 2;
+    return {
+      x1: (total / 2 - dx).toFixed(3),
+      y1: (total / 2 - dy).toFixed(3),
+      x2: (total / 2 + dx).toFixed(3),
+      y2: (total / 2 + dy).toFixed(3),
+    };
+  }
+
+  function fillPaths(context, paths) {
+    for (const path of paths) {
+      context.fill(new Path2D(path));
+    }
+  }
+
+  function drawQr(canvas, qr, size, options = {}) {
     if (!canvas || !qr) return;
+    const style = normalizeStyle(options.style);
+    const foreground = options.foreground || "#101b33";
+    const background = options.background || "#ffffff";
+    const plan = buildQrPlan(qr, style, Boolean(options.logo));
+
     canvas.width = size;
     canvas.height = size;
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    const moduleCount = qr.getModuleCount();
-    const quietZone = 4;
-    const totalModules = moduleCount + quietZone * 2;
-    const moduleSize = Math.max(1, Math.floor(size / totalModules));
-    const contentSize = moduleSize * totalModules;
-    const offset = Math.floor((size - contentSize) / 2);
+    const unit = Math.max(1, Math.floor(size / plan.totalModules));
+    const origin = Math.floor((size - unit * plan.totalModules) / 2);
+    const toPixel = (value) => origin + value * unit;
 
     context.clearRect(0, 0, size, size);
     context.fillStyle = background;
     context.fillRect(0, 0, size, size);
-    context.fillStyle = foreground;
 
-    for (let row = 0; row < moduleCount; row += 1) {
-      for (let column = 0; column < moduleCount; column += 1) {
-        if (qr.isDark(row, column)) {
-          const x = offset + (column + quietZone) * moduleSize;
-          const y = offset + (row + quietZone) * moduleSize;
-          context.fillRect(x, y, moduleSize, moduleSize);
-        }
+    const eyes = eyePaths(plan, style, toPixel, unit);
+    const dataPaths = [];
+    for (const [row, column] of plan.cells) {
+      dataPaths.push(modulePath(toPixel(column + plan.margin), toPixel(row + plan.margin), unit, style.moduleShape));
+    }
+
+    let paint = foreground;
+    if (style.gradient) {
+      const line = gradientLine(style.gradient.angle, plan.totalModules);
+      const gradient = context.createLinearGradient(
+        origin + Number(line.x1) * unit,
+        origin + Number(line.y1) * unit,
+        origin + Number(line.x2) * unit,
+        origin + Number(line.y2) * unit,
+      );
+      gradient.addColorStop(0, style.gradient.from);
+      gradient.addColorStop(1, style.gradient.to);
+      paint = gradient;
+    }
+
+    context.fillStyle = paint;
+    fillPaths(context, dataPaths);
+    fillPaths(context, eyes.outer);
+    context.fillStyle = background;
+    fillPaths(context, eyes.background);
+    context.fillStyle = paint;
+    fillPaths(context, eyes.inner);
+
+    const logo = logoGeometry(plan);
+    const image = options.logo ? getLogoImage(options.logo) : null;
+    if (logo) {
+      const boxX = toPixel(logo.x);
+      const boxY = toPixel(logo.y);
+      const boxSize = logo.size * unit;
+      context.fillStyle = background;
+      context.fill(new Path2D(roundedPath(boxX, boxY, boxSize, unit * 0.9)));
+      if (image) {
+        const inset = boxSize * 0.12;
+        const maxEdge = boxSize - inset * 2;
+        const scale = Math.min(maxEdge / image.naturalWidth, maxEdge / image.naturalHeight);
+        const width = image.naturalWidth * scale;
+        const height = image.naturalHeight * scale;
+        context.drawImage(image, boxX + (boxSize - width) / 2, boxY + (boxSize - height) / 2, width, height);
       }
     }
   }
@@ -403,6 +944,8 @@
         mode: state.mode,
         foreground: state.foreground,
         background: state.background,
+        style: normalizeStyle(state.style),
+        logo: state.logo,
       };
       if (state.mode === "link") body.destination = elements.linkInput.value;
       else body.contactData = getContactData();
@@ -435,9 +978,16 @@
       if (error.status === 401) {
         clearSession();
         openAuthModal("login", "Votre session a expiré. Reconnectez-vous pour continuer.");
-      } else {
-        showToast(error.message || "Impossible d’enregistrer le QR code.");
+        return;
       }
+      if (error.status === 402 || error.status === 409) {
+        showToast(error.message || "Votre offre ne permet pas cette action.");
+        if (error.status === 402) openQuotaModal();
+        await loadLibrary();
+        renderHistory();
+        return;
+      }
+      showToast(error.message || "Impossible d’enregistrer le QR code.");
     } finally {
       if (state.sessionEpoch === epoch) {
         state.isSaving = false;
@@ -449,6 +999,7 @@
 
   function renderHistory() {
     const count = state.history.length;
+    const activeCount = state.history.filter((item) => item.isActive !== false).length;
     const totalScans = state.history.reduce((sum, item) => sum + Number(item.scanCount || 0), 0);
     const weeklyScans = state.history.reduce((sum, item) => sum + Number(item.scansWeek || 0), 0);
     elements.historyCount.textContent = String(count).padStart(2, "0");
@@ -456,6 +1007,7 @@
     elements.metricQrCount.textContent = formatCompactNumber(count);
     elements.metricScanCount.textContent = formatCompactNumber(totalScans);
     elements.metricWeekCount.textContent = formatCompactNumber(weeklyScans);
+    renderEntitlement();
 
     if (!count) {
       elements.historyGrid.innerHTML = state.user
@@ -475,28 +1027,39 @@
       return;
     }
 
-    elements.historyGrid.innerHTML = state.history.map((item) => `
-      <article class="history-card" data-history-id="${escapeHtml(item.id)}">
+    elements.historyGrid.innerHTML = state.history.map((item) => {
+      const isActive = item.isActive !== false;
+      return `
+      <article class="history-card${isActive ? "" : " is-inactive"}" data-history-id="${escapeHtml(item.id)}">
         <div class="history-thumbnail"><canvas width="120" height="120" aria-hidden="true"></canvas></div>
         <div class="history-info">
-          <span class="history-type">${item.mode === "contact" ? "Coordonnées" : "Lien"}</span>
+          <span class="history-type">${item.mode === "contact" ? "Coordonnées" : "Lien"}${isActive ? "" : `<span class="history-state">Désactivé</span>`}</span>
           <strong class="history-name" title="${escapeHtml(item.name)}">${escapeHtml(item.name)}</strong>
           <span class="history-date">${formatDate(item.createdAt)} · <b>${formatScanCount(item.scanCount)}</b></span>
         </div>
         <div class="history-actions">
           <button class="history-menu stats-action" type="button" data-history-action="stats" aria-label="Voir les statistiques" title="Statistiques">⌁</button>
           <button class="history-menu" type="button" data-history-action="load" aria-label="Charger ce QR code" title="Modifier">↗</button>
+          <button class="history-menu ${isActive ? "deactivate-action" : "activate-action"}" type="button" data-history-action="toggle" aria-label="${isActive ? "Désactiver" : "Réactiver"} ce QR code" title="${isActive ? "Désactiver" : "Réactiver"}">${isActive ? "⏸" : "▶"}</button>
           <button class="history-menu delete-action" type="button" data-history-action="delete" aria-label="Supprimer ce QR code" title="Supprimer">×</button>
         </div>
       </article>
-    `).join("");
+    `;
+    }).join("");
 
     $$(".history-card", elements.historyGrid).forEach((card) => {
       const item = state.history.find((entry) => String(entry.id) === card.dataset.historyId);
       if (!item) return;
       const thumbnail = $("canvas", card);
-      const qr = createQr(getHistoryPayload(item));
-      if (qr) drawQr(thumbnail, qr, 120, item.foreground || "#101b33", item.background || "#ffffff");
+      const qr = createQr(getHistoryPayload(item), { errorCorrectionLevel: item.logo ? "H" : "M" });
+      if (qr) {
+        drawQr(thumbnail, qr, 120, {
+          style: item.style,
+          foreground: item.foreground || "#101b33",
+          background: item.background || "#ffffff",
+          logo: item.logo || null,
+        });
+      }
     });
   }
 
@@ -518,6 +1081,26 @@
       await openStats(item.id);
     }
 
+    if (button.dataset.historyAction === "toggle") {
+      const willActivate = item.isActive === false;
+      button.disabled = true;
+      try {
+        const updated = await setQrcodeActive(item.id, willActivate);
+        state.history = state.history.map((entry) => (entry.id === updated.id ? updated : entry));
+        renderHistory();
+        showToast(willActivate ? "QR code réactivé." : "QR code désactivé — il affiche désormais une page d’explication.");
+      } catch (error) {
+        if (error.status === 402) {
+          showToast(error.message || "Votre offre ne permet pas d’activer plus de QR codes.");
+          await loadLibrary();
+        } else {
+          showToast(error.message || "Impossible de modifier ce QR code.");
+        }
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     if (button.dataset.historyAction === "delete") {
       if (!window.confirm(`Supprimer « ${item.name} » et toutes ses statistiques ?`)) return;
       try {
@@ -537,10 +1120,174 @@
     }
   }
 
+  async function setQrcodeActive(id, isActive) {
+    const result = await api(`/api/qrcodes/${id}/status`, { method: "POST", body: { isActive } });
+    return result.qrcode;
+  }
+
+  function planLabel() {
+    const entitlement = state.entitlement;
+    if (!entitlement) return "";
+    return entitlement.label || String(entitlement.plan || "").replace(/^./, (letter) => letter.toUpperCase());
+  }
+
+  function quotaLimitLabel(limit) {
+    return limit === null || limit === undefined ? "Illimité" : formatCompactNumber(limit);
+  }
+
+  function renderEntitlement() {
+    const entitlement = state.entitlement;
+    const signedIn = Boolean(state.user);
+    elements.planBadge.hidden = !signedIn;
+    elements.quotaMeters.hidden = !signedIn || !entitlement;
+    elements.quotaBanner.hidden = !signedIn || !entitlement || !entitlement.overQuota;
+    if (!signedIn || !entitlement) return;
+
+    elements.planBadge.textContent = planLabel();
+    elements.planBadge.dataset.plan = entitlement.plan;
+
+    setQuotaMeter(
+      elements.quotaStoredMeter,
+      elements.quotaStoredValue,
+      elements.quotaStoredBar,
+      entitlement.used,
+      entitlement.maxQrcodes
+    );
+    setQuotaMeter(
+      elements.quotaActiveMeter,
+      elements.quotaActiveValue,
+      elements.quotaActiveBar,
+      entitlement.usedActive,
+      entitlement.maxActive
+    );
+
+    if (entitlement.overQuota) {
+      const plan = planLabel();
+      const overStored = entitlement.maxQrcodes !== null && entitlement.used > entitlement.maxQrcodes;
+      const overActive = entitlement.maxActive !== null && entitlement.usedActive > entitlement.maxActive;
+      const details = [];
+      if (overStored) {
+        details.push(
+          `${entitlement.used} QR codes enregistrés pour ${quotaLimitLabel(entitlement.maxQrcodes)} autorisés`
+        );
+      }
+      if (overActive) {
+        details.push(
+          `${entitlement.usedActive} QR codes actifs pour ${quotaLimitLabel(entitlement.maxActive)} autorisés`
+        );
+      }
+      elements.quotaBannerTitle.textContent = `Votre compte dépasse l’offre ${plan}`;
+      elements.quotaBannerDetail.textContent = details.length
+        ? `${details.join(" · ")}. Tout continue de fonctionner : choisissez ce que vous désactivez.`
+        : "Tout continue de fonctionner.";
+      elements.quotaBannerTrim.hidden = !overActive;
+    }
+  }
+
+  function setQuotaMeter(meter, valueNode, barNode, used, max) {
+    const unlimited = max === null || max === undefined;
+    meter.classList.toggle("is-unlimited", unlimited);
+    meter.classList.toggle("is-over", !unlimited && used > max);
+    valueNode.textContent = unlimited ? `${formatCompactNumber(used)} · Illimité` : `${used} / ${formatCompactNumber(max)}`;
+    const ratio = unlimited ? 1 : Math.min(1, max > 0 ? used / max : 1);
+    barNode.style.width = `${Math.max(0.02, ratio) * 100}%`;
+  }
+
+  function openQuotaModal() {
+    if (!state.user) {
+      openAuthModal("login", "Connectez-vous pour gérer vos QR codes actifs.");
+      return;
+    }
+    const active = state.history.filter((item) => item.isActive !== false);
+    const inactive = state.history.filter((item) => item.isActive === false);
+    const maxActive = state.entitlement?.maxActive ?? null;
+    const headroom = maxActive === null ? active.length : Math.max(0, maxActive - active.length);
+
+    elements.quotaModalIntro.textContent = maxActive === null
+      ? `Votre offre autorise un nombre illimité de QR codes actifs. ${inactive.length} sont désactivés, dans un ordre que vous seul choisissez.`
+      : `Votre offre ${planLabel()} autorise ${quotaLimitLabel(maxActive)} QR code${maxActive > 1 ? "s" : ""} actif${maxActive > 1 ? "s" : ""} en même temps. ` +
+        `Vous pouvez en réactiver ${quotaLimitLabel(headroom)} sans changer d’offre.`;
+
+    elements.quotaModalList.innerHTML = active.map((item) => {
+      const lastScan = Number(item.scanCount || 0);
+      return `
+        <label class="quota-option" data-history-id="${escapeHtml(item.id)}">
+          <canvas width="44" height="44" aria-hidden="true"></canvas>
+          <span class="quota-option-info">
+            <strong>${escapeHtml(item.name)}</strong>
+            <span>${lastScan > 0 ? formatScanCount(lastScan) : "Aucun scan"}</span>
+          </span>
+          <input class="quota-switch" type="checkbox" data-history-id="${escapeHtml(item.id)}" aria-label="Désactiver ${escapeHtml(item.name)}" />
+        </label>
+      `;
+    }).join("");
+
+    $$("canvas", elements.quotaModalList).forEach((canvas) => {
+      const option = canvas.closest("[data-history-id]");
+      const item = state.history.find((entry) => String(entry.id) === option.dataset.historyId);
+      if (!item) return;
+      const qr = createQr(getHistoryPayload(item), { errorCorrectionLevel: item.logo ? "H" : "M" });
+      if (qr) {
+        drawQr(canvas, qr, 44, {
+          style: item.style,
+          foreground: item.foreground || "#101b33",
+          background: item.background || "#ffffff",
+          logo: item.logo || null,
+        });
+      }
+    });
+
+    syncQuotaModalConfirm();
+    elements.quotaModal.hidden = false;
+    document.body.classList.add("modal-open");
+  }
+
+  function syncQuotaModalConfirm() {
+    const selected = $$(".quota-switch:checked", elements.quotaModalList).length;
+    const button = elements.quotaModalConfirm;
+    button.disabled = selected === 0;
+    button.textContent = selected > 1
+      ? `Désactiver ${selected} QR codes`
+      : (selected === 1 ? "Désactiver ce QR code" : "Désactiver le surplus");
+  }
+
+  async function confirmTrimActiveQrcodes() {
+    const targets = $$(".quota-switch:checked", elements.quotaModalList).map((input) => input.dataset.historyId);
+    if (!targets.length) return;
+    elements.quotaModalConfirm.disabled = true;
+    elements.quotaModalConfirm.textContent = "Désactivation…";
+    let failed = 0;
+    try {
+      for (const id of targets) {
+        try {
+          const updated = await setQrcodeActive(id, false);
+          state.history = state.history.map((entry) => (entry.id === updated.id ? updated : entry));
+        } catch (error) {
+          failed += 1;
+          if (error.status !== 402 && error.status !== 404) {
+            showToast(error.message || "Impossible de désactiver ce QR code.");
+          }
+        }
+      }
+      closeModal("quotaModal");
+      await loadLibrary();
+      showToast(
+        failed
+          ? `${targets.length - failed} QR code(s) désactivé(s), ${failed} en échec.`
+          : `${targets.length} QR code${targets.length > 1 ? "s" : ""} désactivé${targets.length > 1 ? "s" : ""}.`
+      );
+    } finally {
+      syncQuotaModalConfirm();
+    }
+  }
+
   function loadHistoryItem(item) {
     state.editRevision += 1;
     state.foreground = item.foreground || "#101b33";
     state.background = item.background || "#ffffff";
+    state.style = normalizeStyle(item.style);
+    state.logo = item.logo || null;
+    state.logoName = "";
     state.currentRecordId = item.id;
     state.trackingUrl = item.trackingUrl;
     state.contentDirty = false;
@@ -594,12 +1341,15 @@
     clearContactData();
     state.foreground = "#101b33";
     state.background = "#ffffff";
+    state.style = { ...defaultStyle };
+    clearLogo();
     state.currentRecordId = null;
     state.trackingUrl = null;
     state.contentDirty = false;
     state.isDirty = false;
     syncColorInputs();
     syncPresetSelection();
+    syncStyleControls();
     setMode("link", { markDirty: false });
     updatePreview();
     showToast("L’éditeur a été réinitialisé.");
@@ -620,7 +1370,7 @@
       return;
     }
     const canvas = document.createElement("canvas");
-    drawQr(canvas, state.currentQr, 1024, state.foreground, state.background);
+    drawQr(canvas, state.currentQr, 1024, currentRenderOptions());
     canvas.toBlob((blob) => {
       if (!blob) return;
       downloadBlob(blob, `${fileName()}.png`);
@@ -644,24 +1394,55 @@
     }
 
     const qr = state.currentQr;
-    const moduleCount = qr.getModuleCount();
-    const quietZone = 4;
-    const totalModules = moduleCount + quietZone * 2;
-    const shapes = [];
-
-    for (let row = 0; row < moduleCount; row += 1) {
-      for (let column = 0; column < moduleCount; column += 1) {
-        if (qr.isDark(row, column)) {
-          shapes.push(`<rect x="${column + quietZone}" y="${row + quietZone}" width="1" height="1"/>`);
-        }
-      }
+    const style = normalizeStyle(state.style);
+    const plan = buildQrPlan(qr, style, Boolean(state.logo));
+    const eyes = eyePaths(plan, style, (value) => value, 1);
+    const dataPaths = [];
+    for (const [row, column] of plan.cells) {
+      dataPaths.push(`<path d="${modulePath(column + plan.margin, row + plan.margin, 1, style.moduleShape)}"/>`);
     }
 
+    const definitions = [];
+    let foregroundFill = escapeXml(state.foreground);
+    if (style.gradient) {
+      const line = gradientLine(style.gradient.angle, plan.totalModules);
+      definitions.push(
+        `<linearGradient id="qraftGradient" gradientUnits="userSpaceOnUse"` +
+        ` x1="${line.x1}" y1="${line.y1}" x2="${line.x2}" y2="${line.y2}">` +
+        `<stop offset="0" stop-color="${escapeXml(style.gradient.from)}"/>` +
+        `<stop offset="1" stop-color="${escapeXml(style.gradient.to)}"/>` +
+        `</linearGradient>`,
+      );
+      foregroundFill = "url(#qraftGradient)";
+    }
+
+    const eyeMarkup = [
+      `<g fill="${foregroundFill}">${eyes.outer.map((path) => `<path d="${path}"/>`).join("")}</g>`,
+      `<g fill="${escapeXml(state.background)}">${eyes.background.map((path) => `<path d="${path}"/>`).join("")}</g>`,
+      `<g fill="${foregroundFill}">${eyes.inner.map((path) => `<path d="${path}"/>`).join("")}</g>`,
+    ].join("");
+    const moduleGroup = `<g fill="${foregroundFill}">${dataPaths.join("")}</g>`;
+
+    const logo = logoGeometry(plan);
+    const logoMarkup = logo
+      ? `<rect x="${logo.x}" y="${logo.y}" width="${logo.size}" height="${logo.size}"` +
+        ` rx="0.9" fill="${escapeXml(state.background)}"/>` +
+        (state.logo
+          ? `<image href="${escapeXml(state.logo)}" x="${(logo.x + logo.size * 0.12).toFixed(3)}"` +
+            ` y="${(logo.y + logo.size * 0.12).toFixed(3)}"` +
+            ` width="${(logo.size * 0.76).toFixed(3)}" height="${(logo.size * 0.76).toFixed(3)}"` +
+            ` preserveAspectRatio="xMidYMid meet"/>`
+          : "")
+      : "";
+
     const svg = [
-      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${totalModules} ${totalModules}" role="img" aria-label="${escapeXml(state.currentLabel)}">`,
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${plan.totalModules} ${plan.totalModules}" role="img" aria-label="${escapeXml(state.currentLabel)}">`,
       `<title>${escapeXml(state.currentLabel)}</title>`,
-      `<rect width="${totalModules}" height="${totalModules}" fill="${escapeXml(state.background)}"/>`,
-      `<g fill="${escapeXml(state.foreground)}">${shapes.join("")}</g>`,
+      definitions.length ? `<defs>${definitions.join("")}</defs>` : "",
+      `<rect width="${plan.totalModules}" height="${plan.totalModules}" fill="${escapeXml(state.background)}"/>`,
+      moduleGroup,
+      eyeMarkup,
+      logoMarkup,
       `</svg>`,
     ].join("");
 
@@ -865,6 +1646,7 @@
     state.isSaving = false;
     state.user = result.user;
     state.csrfToken = result.csrfToken;
+    state.entitlement = result.entitlement || null;
     state.legacyHistory = loadLegacyHistoryForUser(result.user.id);
     renderAuthState();
   }
@@ -876,12 +1658,15 @@
     clearContactData();
     state.foreground = "#101b33";
     state.background = "#ffffff";
+    state.style = { ...defaultStyle };
+    clearLogo();
     state.currentRecordId = null;
     state.trackingUrl = null;
     state.contentDirty = false;
     state.isDirty = false;
     syncColorInputs();
     syncPresetSelection();
+    syncStyleControls();
     setMode("link", { markDirty: false });
     updatePreview();
   }
@@ -892,6 +1677,7 @@
     state.isSaving = false;
     state.user = null;
     state.csrfToken = null;
+    state.entitlement = null;
     state.history = [];
     state.legacyHistory = [];
     state.activeStatsId = null;
@@ -902,6 +1688,7 @@
       elements.saveButton.innerHTML = "";
     }
     if (!elements.statsModal.hidden) closeModal("statsModal");
+    if (!elements.quotaModal.hidden) closeModal("quotaModal");
     if (!elements.authModal.hidden) closeModal("authModal");
     clearEditor();
     renderAuthState();
@@ -932,6 +1719,7 @@
       do {
         const result = await api(`/api/qrcodes?limit=100&offset=${offset}`);
         if (!isCurrentSession(userId, epoch)) return;
+        if (result.entitlement) state.entitlement = result.entitlement;
         const page = Array.isArray(result.qrcodes) ? result.qrcodes : [];
         qrcodes.push(...page);
         total = Number.isInteger(result.total) ? result.total : qrcodes.length;
@@ -1200,7 +1988,9 @@
     const modal = document.getElementById(id);
     if (modal) modal.hidden = true;
     if (id === "statsModal") state.activeStatsId = null;
-    if (elements.authModal.hidden && elements.statsModal.hidden) document.body.classList.remove("modal-open");
+    if (elements.authModal.hidden && elements.statsModal.hidden && elements.quotaModal.hidden) {
+      document.body.classList.remove("modal-open");
+    }
   }
 
   function setFormBusy(form, busy, busyLabel) {

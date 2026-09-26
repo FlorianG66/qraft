@@ -91,15 +91,112 @@ async function stopServer(child) {
   });
 }
 
+// Attribue une offre en écrivant directement en base, sur le modèle des
+// `scan_events` injectés par le test des agrégats. Le module ne résout pas l'offre
+// en cache, donc le changement est visible dès la requête suivante.
+function grantPlan(databasePath, email, plan, overrides = {}) {
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec("PRAGMA busy_timeout = 5000;");
+    const user = database.prepare("SELECT id FROM users WHERE email = ?").get(email);
+    assert.ok(user, `le compte ${email} doit exister avant d’attribuer l’offre ${plan}`);
+    // Le serveur stocke tous ses horodatages en millisecondes.
+    const timestamp = Date.now();
+    database.prepare(`
+      INSERT INTO subscriptions (
+        user_id, plan, status, stripe_customer_id, stripe_subscription_id, stripe_price_id,
+        current_period_end, cancel_at_period_end, grace_until, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      user.id,
+      plan,
+      overrides.status || "active",
+      overrides.stripeCustomerId || `cus_test_${user.id}`,
+      overrides.stripeSubscriptionId || `sub_test_${user.id}`,
+      overrides.stripePriceId || `price_test_${plan}`,
+      overrides.currentPeriodEnd === undefined ? timestamp + 30 * 24 * 3_600 * 1_000 : overrides.currentPeriodEnd,
+      overrides.cancelAtPeriodEnd ? 1 : 0,
+      overrides.graceUntil === undefined ? null : overrides.graceUntil,
+      timestamp,
+      timestamp,
+    );
+    return user.id;
+  } finally {
+    database.close();
+  }
+}
+
+function setQrcodeActive(databasePath, qrcodeId, isActive) {
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec("PRAGMA busy_timeout = 5000;");
+    database.prepare("UPDATE qrcodes SET is_active = ? WHERE id = ?").run(isActive ? 1 : 0, qrcodeId);
+  } finally {
+    database.close();
+  }
+}
+
+function readQrcodeRow(databasePath, qrcodeId) {
+  const database = new DatabaseSync(databasePath);
+  try {
+    return database.prepare("SELECT id, is_active, inactive_scans, public_token, destination FROM qrcodes WHERE id = ?").get(qrcodeId);
+  } finally {
+    database.close();
+  }
+}
+
+// Repli brutal sur Découverte : on simule un compte qui a beaucoup de QR codes
+// publiés avant l'existence des offres, en les inscrivant directement en base.
+function seedQrcodes(databasePath, email, count) {
+  const database = new DatabaseSync(databasePath);
+  try {
+    database.exec("PRAGMA busy_timeout = 5000;");
+    const user = database.prepare("SELECT id FROM users WHERE email = ?").get(email);
+    assert.ok(user, `le compte ${email} doit exister avant l’injection de QR codes`);
+    const timestamp = Date.now();
+    const insert = database.prepare(`
+      INSERT INTO qrcodes (
+        user_id, public_token, name, mode, destination, foreground, background,
+        created_at, updated_at, is_active, inactive_scans
+      ) VALUES (?, ?, ?, 'link', ?, '#101b33', '#ffffff', ?, ?, 1, 0)
+    `);
+    const tokens = [];
+    for (let index = 0; index < count; index += 1) {
+      const token = String(index).padStart(16, "0");
+      insert.run(user.id, token, `QR existant ${index}`, `https://example.test/regression/${index}`, timestamp, timestamp);
+      tokens.push(token);
+    }
+    return tokens;
+  } finally {
+    database.close();
+  }
+}
+
+async function registerUser(email, password = "MotDePassePlan789", ip = null) {
+  const headers = { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" };
+  if (ip) headers["X-Forwarded-For"] = ip;
+  const response = await request("/api/auth/register", {
+    method: "POST",
+    headers,
+    body: { displayName: "Compte Plan", email, password },
+  });
+  assert.equal(response.status, 201, `l’inscription de ${email} doit aboutir`);
+  const body = await response.json();
+  return {
+    cookie: sessionCookie(response),
+    csrf: body.csrfToken,
+    headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" },
+  };
+}
+
 test("comptes, isolation des QR codes et statistiques", async () => {
   PORT = await getFreePort();
   ORIGIN = `http://localhost:${PORT}`;
   const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "qraft-test-"));
   const logSink = { value: "" };
   const serverLog = () => logSink.value;
-  const server = await startServer(buildChildEnvironment({
-    QRAFT_DB_PATH: path.join(temporaryDirectory, "test.sqlite"),
-  }), logSink);
+  const databasePath = path.join(temporaryDirectory, "test.sqlite");
+  const server = await startServer(buildChildEnvironment({ QRAFT_DB_PATH: databasePath }), logSink);
 
   try {
 
@@ -120,6 +217,10 @@ test("comptes, isolation des QR codes et statistiques", async () => {
     assert.match(register.headers.get("set-cookie"), /HttpOnly/);
     assert.match(register.headers.get("set-cookie"), /SameSite=Strict/);
     assert.ok(firstSession.csrfToken);
+
+    // Ce test porte sur l'isolation des comptes, pas sur les quotas : le compte
+    // passe sur Ultra pour que ses QR codes restent sans limite.
+    grantPlan(databasePath, "camille@example.test", "ultra");
 
     const created = await request("/api/qrcodes", {
       method: "POST",
@@ -162,7 +263,7 @@ test("comptes, isolation des QR codes et statistiques", async () => {
       cookie: firstCookie,
       csrf: firstSession.csrfToken,
       headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" },
-      body: "x".repeat(70_000),
+      body: "x".repeat(400_000),
     });
     assert.equal(oversized.status, 413, serverLog);
 
@@ -276,6 +377,7 @@ test("comptes, isolation des QR codes et statistiques", async () => {
     assert.equal(secondRegister.status, 201, serverLog);
     const secondSession = await secondRegister.json();
     const secondCookie = sessionCookie(secondRegister);
+    grantPlan(databasePath, "alex@example.test", "ultra");
 
     const forbiddenStats = await request(`/api/qrcodes/${qrcodeId}/stats`, {
       cookie: secondCookie,
@@ -522,6 +624,659 @@ test("agrégats de scans, rétention et absence d’adresse IP", async () => {
     const statsAfterSecondRestart = await request(`/api/qrcodes/${qrcode.id}/stats`, { cookie });
     const stable = await statsAfterSecondRestart.json();
     assert.equal(stable.stats.total, 5, "la réconciliation des agrégats doit être idempotente");
+  } finally {
+    await stopServer(server);
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("personnalisation du QR code : style, dégradé et logo", async () => {
+  PORT = await getFreePort();
+  ORIGIN = `http://127.0.0.1:${PORT}`;
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "qraft-style-"));
+  const databasePath = path.join(temporaryDirectory, "style.sqlite");
+  const environment = buildChildEnvironment({ QRAFT_DB_PATH: databasePath });
+  const logSink = { value: "" };
+  const logo = `data:image/png;base64,${Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+    "base64",
+  ).toString("base64")}`;
+  let server;
+
+  try {
+    server = await startServer(environment, logSink);
+
+    const registered = await request("/api/auth/register", {
+      method: "POST",
+      headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" },
+      body: { displayName: "Style Test", email: "style@example.test", password: "MotDePasseStyle789" },
+    });
+    assert.equal(registered.status, 201, logSink.value);
+    const session = await registered.json();
+    const cookie = sessionCookie(registered);
+    const auth = { cookie, csrf: session.csrfToken, headers: { Origin: ORIGIN, "Sec-Fetch-Site": "same-origin" } };
+
+    // Les formes, le dégradé et le logo sont des options Ultra : ce test les
+    // vérifie donc sur un compte Ultra. Le refus côté Découverte est couvert par
+    // le test des offres.
+    grantPlan(databasePath, "style@example.test", "ultra");
+
+
+    const created = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "QR stylé",
+        mode: "link",
+        destination: "https://example.test/stylé",
+        foreground: "#101b33",
+        background: "#ffffff",
+        style: { moduleShape: "dot", eyeShape: "leaf", margin: 2, logoSizePct: 28, gradient: { from: "#101b33", to: "#bd3c34", angle: 45 } },
+        logo,
+      },
+    });
+    assert.equal(created.status, 201, logSink.value);
+    const createdBody = await created.json();
+    assert.deepEqual(createdBody.qrcode.style, {
+      moduleShape: "dot",
+      eyeShape: "leaf",
+      margin: 2,
+      logoSizePct: 28,
+      gradient: { from: "#101b33", to: "#bd3c34", angle: 45 },
+    });
+    assert.equal(createdBody.qrcode.logo, logo);
+
+    const library = await request("/api/qrcodes", { cookie });
+    const stored = (await library.json()).qrcodes.find((entry) => entry.id === createdBody.qrcode.id);
+    assert.deepEqual(stored.style, createdBody.qrcode.style, "le style doit être relu depuis la base");
+    assert.equal(stored.logo, logo, "le logo doit être relu depuis la base");
+
+    const updated = await request(`/api/qrcodes/${createdBody.qrcode.id}`, {
+      method: "PUT",
+      ...auth,
+      body: {
+        name: "QR stylé",
+        mode: "link",
+        destination: "https://example.test/stylé",
+        foreground: "#101b33",
+        background: "#ffffff",
+        style: { moduleShape: "rounded", eyeShape: "rounded", margin: 6, logoSizePct: 99, gradient: null },
+        logo: null,
+      },
+    });
+    assert.equal(updated.status, 200, logSink.value);
+    const updatedBody = await updated.json();
+    assert.deepEqual(
+      updatedBody.qrcode.style,
+      { moduleShape: "rounded", eyeShape: "rounded", margin: 6, logoSizePct: 30, gradient: null },
+      "une taille de logo hors bornes doit etre ramenee a 30 %",
+    );
+    assert.equal(updatedBody.qrcode.logo, null);
+
+    const defaults = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: { name: "QR par défaut", mode: "link", destination: "https://example.test/defauts" },
+    });
+    assert.equal(defaults.status, 201, logSink.value);
+    assert.deepEqual(
+      (await defaults.json()).qrcode.style,
+      { moduleShape: "square", eyeShape: "square", margin: 4, logoSizePct: 22, gradient: null },
+      "un style absent doit retomber sur les valeurs par défaut",
+    );
+
+    const clamped = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "Marge aberrante",
+        mode: "link",
+        destination: "https://example.test/marge",
+        style: { moduleShape: "inconnu", eyeShape: "inconnu", margin: 99, logoSizePct: 4 },
+      },
+    });
+    assert.equal(clamped.status, 201, logSink.value);
+    assert.deepEqual(
+      (await clamped.json()).qrcode.style,
+    { moduleShape: "square", eyeShape: "square", margin: 8, logoSizePct: 18, gradient: null },
+    "les valeurs hors bornes doivent être normalisées",
+    );
+
+    const fractionalMargin = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "Marge fractionnaire",
+        mode: "link",
+        destination: "https://example.test/marge-fractionnaire",
+        style: { margin: 2.5 },
+      },
+    });
+    assert.equal(fractionalMargin.status, 201, logSink.value);
+    assert.equal(
+      (await fractionalMargin.json()).qrcode.style.margin,
+      4,
+      "une marge non entière doit retomber sur la valeur par défaut",
+    );
+
+    const rejections = [
+      ["dégradé mal formé", { gradient: { from: "rouge", to: "#bd3c34", angle: 0 } }, 400],
+      ["dégradé sans contraste", { gradient: { from: "#fdfdfd", to: "#fefefe", angle: 0 } }, 400],
+    ];
+    for (const [label, style, expected] of rejections) {
+      const response = await request("/api/qrcodes", {
+        method: "POST",
+        ...auth,
+        body: { name: `Rejet ${label}`, mode: "link", destination: "https://example.test/rejet", style },
+      });
+      assert.equal(response.status, expected, `${label} : ${logSink.value}`);
+    }
+
+    const foreignLogo = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "Logo douteux",
+        mode: "link",
+        destination: "https://example.test/logo",
+        logo: "data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=",
+      },
+    });
+    assert.equal(foreignLogo.status, 400, "un logo SVG doit être refusé : il est rasterisé côté client");
+
+    const remoteLogo = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "Logo distant",
+        mode: "link",
+        destination: "https://example.test/logo",
+        logo: "https://exemple.test/logo.png",
+      },
+    });
+    assert.equal(remoteLogo.status, 400, "un logo distant doit être refusé");
+
+    const heavyLogo = await request("/api/qrcodes", {
+      method: "POST",
+      ...auth,
+      body: {
+        name: "Logo lourd",
+        mode: "link",
+        destination: "https://example.test/logo",
+        logo: `data:image/png;base64,${"A".repeat(240_000)}`,
+      },
+    });
+    assert.equal(heavyLogo.status, 413, "un logo trop volumineux doit être refusé");
+
+    const stillLocal = await request("/api/qrcodes", { cookie });
+    assert.equal(
+      (await stillLocal.json()).qrcodes.filter((entry) => entry.name.startsWith("Rejet") || entry.name.startsWith("Logo")).length,
+      0,
+      "aucun QR code ne doit être créé quand la personnalisation est refusée",
+    );
+  } finally {
+    await stopServer(server);
+    rmSync(temporaryDirectory, { recursive: true, force: true });
+  }
+});
+
+test("offres : quotas, QR codes inactifs, régression et grâce de 48 h", async () => {
+  PORT = await getFreePort();
+  ORIGIN = `http://127.0.0.1:${PORT}`;
+  const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "qraft-plan-"));
+  const databasePath = path.join(temporaryDirectory, "plan.sqlite");
+  const logSink = { value: "" };
+  // `QRAFT_TRUST_PROXY` permet de faire varier l’adresse client pour éprouver la
+  // déduplication des scans sans dépendre d’un vrai second appareil.
+  const environment = buildChildEnvironment({
+    QRAFT_DB_PATH: databasePath,
+    QRAFT_TRUST_PROXY: "true",
+  });
+  let server;
+
+  const asClient = (ip) => ({ "User-Agent": "qraft-plan-test", "X-Forwarded-For": ip });
+
+  try {
+    server = await startServer(environment, logSink);
+
+    // ── L'offre Découverte est l'état par défaut ──────────────────────────────
+    const free = await registerUser("decouverte@example.test", undefined, "10.9.0.1");
+
+    const me = await request("/api/auth/me", { cookie: free.cookie });
+    const meBody = await me.json();
+    assert.equal(meBody.entitlement.plan, "decouverte");
+    assert.equal(meBody.entitlement.maxQrcodes, 5);
+    assert.equal(meBody.entitlement.maxActive, 1);
+    assert.equal(meBody.entitlement.statsDays, 30);
+    assert.equal(meBody.entitlement.canCreate, true);
+    assert.equal(meBody.entitlement.canActivate, true);
+    assert.equal(meBody.entitlement.overQuota, false);
+
+    const firstCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { name: "Premier", mode: "link", destination: "https://example.test/premier" },
+    });
+    assert.equal(firstCreate.status, 201, logSink.value);
+    const firstQrcode = (await firstCreate.json()).qrcode;
+    assert.equal(firstQrcode.isActive, true);
+    assert.equal(firstQrcode.statsDays, 30);
+
+    // Le quota d'actifs prime : un seul QR code actif à la fois.
+    const secondCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { name: "Second", mode: "link", destination: "https://example.test/second" },
+    });
+    assert.equal(secondCreate.status, 402, logSink.value);
+    assert.equal((await secondCreate.json()).error.code, "active_limit_reached");
+
+    // ── La route de statut exige un booléen explicite ─────────────────────────
+    const ambiguousStatus = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: {},
+    });
+    assert.equal(ambiguousStatus.status, 400, "un corps vide ne doit jamais basculer un QR code");
+    assert.equal(readQrcodeRow(databasePath, firstQrcode.id).is_active, 1);
+
+    const wrongType = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: 1 },
+    });
+    assert.equal(wrongType.status, 400, "un entier n’est pas un booléen");
+
+    const statusWithoutCsrf = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      headers: free.headers,
+      body: { active: false },
+    });
+    assert.equal(statusWithoutCsrf.status, 403);
+
+    // ── Un QR code désactivé renvoie 410 sur les trois routes publiques ───────
+    const deactivated = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: false },
+    });
+    assert.equal(deactivated.status, 200, logSink.value);
+    assert.equal((await deactivated.json()).qrcode.isActive, false);
+
+    const inactiveVisit = await request(firstQrcode.trackingUrl, { headers: asClient("10.1.0.1") });
+    assert.equal(inactiveVisit.status, 410, "un QR code désactivé doit répondre 410, pas rediriger");
+    assert.match(inactiveVisit.headers.get("cache-control") || "", /no-store/);
+    assert.match(
+      inactiveVisit.headers.get("cache-control") || "",
+      /must-revalidate/,
+      "un 410 mis en cache deviendrait un mur définitif après réactivation",
+    );
+    assert.match(await inactiveVisit.text(), /désactivé/i);
+
+    // La redirection est coupée mais les agrégats ne sont pas touchés par la visite.
+    const statsAfterInactive = await request(`/api/qrcodes/${firstQrcode.id}/stats`, { cookie: free.cookie });
+    assert.equal((await statsAfterInactive.json()).stats.total, 0, "une visite sur un QR inactif ne doit pas être mesurée");
+
+    const repeatInactiveVisit = await request(firstQrcode.trackingUrl, { headers: asClient("10.1.0.1") });
+    assert.equal(repeatInactiveVisit.status, 410);
+    assert.equal(
+      readQrcodeRow(databasePath, firstQrcode.id).inactive_scans,
+      1,
+      "deux scans rapprochés depuis le même client ne comptent qu’une fois",
+    );
+
+    await request(firstQrcode.trackingUrl, { headers: asClient("10.1.0.2") });
+    assert.equal(
+      readQrcodeRow(databasePath, firstQrcode.id).inactive_scans,
+      2,
+      "un second client doit être compté : c’est la preuve chiffrée du manque à gagner",
+    );
+
+    // ── Réactivation : même jeton, même destination, historiques intacts ───────
+    const retryCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { name: "Second", mode: "link", destination: "https://example.test/second" },
+    });
+    assert.equal(retryCreate.status, 201, logSink.value);
+    const secondQrcode = (await retryCreate.json()).qrcode;
+
+    const reactivateWhileFull = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: true },
+    });
+    assert.equal(reactivateWhileFull.status, 402, "la place active est déjà prise");
+    assert.equal(readQrcodeRow(databasePath, firstQrcode.id).is_active, 0, "un refus ne doit pas modifier l’état");
+
+    await request(`/api/qrcodes/${secondQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: false },
+    });
+
+    const reactivated = await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: true },
+    });
+    assert.equal(reactivated.status, 200, logSink.value);
+    assert.equal((await reactivated.json()).qrcode.isActive, true);
+
+    const rowAfterReactivation = readQrcodeRow(databasePath, firstQrcode.id);
+    assert.equal(
+      rowAfterReactivation.public_token,
+      firstQrcode.trackingUrl.split("/").pop(),
+      "la réactivation ne doit jamais changer le jeton public : un QR imprimé resterait valide",
+    );
+    assert.equal(rowAfterReactivation.destination, "https://example.test/premier");
+    assert.equal(
+      rowAfterReactivation.inactive_scans,
+      2,
+      "le compteur de scans perdus est conservé, pas remis à zéro",
+    );
+
+    const backToWork = await request(firstQrcode.trackingUrl, { headers: asClient("10.1.0.3") });
+    assert.equal(backToWork.status, 302, "la redirection doit revenir à l’identique");
+    assert.equal(backToWork.headers.get("location"), "https://example.test/premier");
+    const statsAfterReactivation = await request(`/api/qrcodes/${firstQrcode.id}/stats`, { cookie: free.cookie });
+    assert.equal((await statsAfterReactivation.json()).stats.total, 1);
+
+    // ── Un QR de contact désactivé perd aussi sa vCard ───────────────────────
+    await request(`/api/qrcodes/${firstQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: false },
+    });
+    const contactCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: {
+        name: "Carte",
+        mode: "contact",
+        contactData: { firstName: "Alex", lastName: "Durand", email: "alex@example.test" },
+      },
+    });
+    assert.equal(contactCreate.status, 201, logSink.value);
+    const contactQrcode = (await contactCreate.json()).qrcode;
+    await request(`/api/qrcodes/${contactQrcode.id}/status`, {
+      method: "POST",
+      cookie: free.cookie,
+      csrf: free.csrf,
+      headers: free.headers,
+      body: { active: false },
+    });
+    assert.equal((await request(contactQrcode.trackingUrl, { headers: asClient("10.1.0.4") })).status, 410);
+    assert.equal((await request(`${contactQrcode.trackingUrl}/vcard`, { headers: asClient("10.1.0.5") })).status, 410);
+
+    // ── Le quota de stockage se compte séparément du quota d’actifs ────────────
+    const regression = await registerUser("regression@example.test", undefined, "10.9.0.2");
+    seedQrcodes(databasePath, "regression@example.test", 12);
+    const regressionLibrary = await request("/api/qrcodes", { cookie: regression.cookie });
+    const regressionBody = await regressionLibrary.json();
+    assert.equal(regressionBody.entitlement.used, 12);
+    assert.equal(regressionBody.entitlement.usedActive, 12);
+    assert.equal(regressionBody.entitlement.overQuota, true, "12 QR codes sous un quota de 5 doit être signalé");
+
+    // Rien n’est bloqué, rien n’est supprimé, rien n’est désactivé d’office.
+    const firstSeeded = regressionBody.qrcodes[0];
+    assert.equal(
+      (await request(firstSeeded.trackingUrl, { headers: asClient("10.2.0.1") })).status,
+      302,
+      "un QR code existant doit continuer à fonctionner hors quota",
+    );
+    assert.equal((await request(`/api/qrcodes/${firstSeeded.id}/stats`, { cookie: regression.cookie })).status, 200);
+    const stillEditable = await request(`/api/qrcodes/${firstSeeded.id}`, {
+      method: "PUT",
+      cookie: regression.cookie,
+      csrf: regression.csrf,
+      headers: regression.headers,
+      body: { name: "Renommé", mode: "link", destination: "https://example.test/renomme" },
+    });
+    assert.equal(stillEditable.status, 200, "l’édition ne doit jamais être bloquée par un quota");
+    const stillDeletable = await request(`/api/qrcodes/${firstSeeded.id}`, {
+      method: "DELETE",
+      cookie: regression.cookie,
+      csrf: regression.csrf,
+      headers: regression.headers,
+    });
+    assert.equal(stillDeletable.status, 200);
+
+    const createWhileOverQuota = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: regression.cookie,
+      csrf: regression.csrf,
+      headers: regression.headers,
+      body: { name: "Refusé", mode: "link", destination: "https://example.test/refuse" },
+    });
+    assert.equal(createWhileOverQuota.status, 409, "un compte hors quota ne peut plus créer");
+    assert.equal((await createWhileOverQuota.json()).error.code, "qrcode_limit_reached");
+
+    const activateWhileOverQuota = await request(`/api/qrcodes/${regressionBody.qrcodes[1].id}/status`, {
+      method: "POST",
+      cookie: regression.cookie,
+      csrf: regression.csrf,
+      headers: regression.headers,
+      body: { active: true },
+    });
+    assert.equal(activateWhileOverQuota.status, 200, "activer un QR déjà actif est idempotent");
+
+    const database2 = new DatabaseSync(databasePath);
+    const activeCount = database2
+      .prepare("SELECT COUNT(*) AS count FROM qrcodes WHERE user_id = (SELECT id FROM users WHERE email = 'regression@example.test') AND is_active = 1")
+      .get().count;
+    database2.close();
+    assert.equal(activeCount, 11, "aucune désactivation automatique ne doit suivre un retour sur Découverte");
+
+    // ── Le quota de 5 QR codes stockés bloque la création ─────────────────────
+    const stored = await registerUser("stocke@example.test", undefined, "10.9.0.3");
+    const createStored = async (index) => {
+      const response = await request("/api/qrcodes", {
+        method: "POST",
+        cookie: stored.cookie,
+        csrf: stored.csrf,
+        headers: stored.headers,
+        body: { name: `Stocké ${index}`, mode: "link", destination: `https://example.test/stocke/${index}` },
+      });
+      return response;
+    };
+    for (let index = 0; index < 5; index += 1) {
+      const response = await createStored(index);
+      assert.equal(response.status, 201, `le QR code ${index + 1}/5 doit passer : ${logSink.value}`);
+      const created = (await response.json()).qrcode;
+      await request(`/api/qrcodes/${created.id}/status`, {
+        method: "POST",
+        cookie: stored.cookie,
+        csrf: stored.csrf,
+        headers: stored.headers,
+        body: { active: false },
+      });
+    }
+    const sixth = await createStored(5);
+    assert.equal(sixth.status, 409, "le sixième QR code stocké doit être refusé");
+    assert.equal((await sixth.json()).error.code, "qrcode_limit_reached");
+
+    // ── La personnalisation payante est refusée en 402, sans rien créer ────────
+    const logo = `data:image/png;base64,${Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    ).toString("base64")}`;
+    const premiumAttempts = [
+      ["forme dot", { style: { moduleShape: "dot" } }],
+      ["œil leaf", { style: { eyeShape: "leaf" } }],
+      ["dégradé", { style: { gradient: { from: "#101b33", to: "#bd3c34", angle: 45 } } }],
+      ["logo", { logo }],
+    ];
+    for (const [label, extra] of premiumAttempts) {
+      const response = await request("/api/qrcodes", {
+        method: "POST",
+        cookie: regression.cookie,
+        csrf: regression.csrf,
+        headers: regression.headers,
+        body: { name: `Premium ${label}`, mode: "link", destination: "https://example.test/premium", ...extra },
+      });
+      assert.equal(response.status, 402, `${label} doit être refusé en 402 : ${logSink.value}`);
+      assert.equal((await response.json()).error.code, "plan_upgrade_required");
+    }
+    const regressionAfterAttempts = await request("/api/qrcodes", { cookie: regression.cookie });
+    assert.equal(
+      (await regressionAfterAttempts.json()).qrcodes.filter((entry) => entry.name.startsWith("Premium")).length,
+      0,
+      "un refus de personnalisation ne doit créer aucun QR code",
+    );
+
+    // ── Une personnalisation déjà enregistrée reste modifiable ────────────────
+    const upgraded = await registerUser("reconstitue@example.test", undefined, "10.9.0.4");
+    grantPlan(databasePath, "reconstitue@example.test", "ultra");
+    const premiumCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: upgraded.cookie,
+      csrf: upgraded.csrf,
+      headers: upgraded.headers,
+      body: {
+        name: "Ultra",
+        mode: "link",
+        destination: "https://example.test/ultra",
+        style: { moduleShape: "dot", eyeShape: "leaf", gradient: { from: "#101b33", to: "#bd3c34", angle: 45 } },
+        logo,
+      },
+    });
+    assert.equal(premiumCreate.status, 201, logSink.value);
+    const premiumQrcode = (await premiumCreate.json()).qrcode;
+
+    const database3 = new DatabaseSync(databasePath);
+    database3.prepare("DELETE FROM subscriptions WHERE user_id = (SELECT id FROM users WHERE email = 'reconstitue@example.test')").run();
+    database3.close();
+
+    const editAfterDowngrade = await request(`/api/qrcodes/${premiumQrcode.id}`, {
+      method: "PUT",
+      cookie: upgraded.cookie,
+      csrf: upgraded.csrf,
+      headers: upgraded.headers,
+      body: {
+        name: "Ultra renommé",
+        mode: "link",
+        destination: "https://example.test/ultra-renomme",
+        style: { moduleShape: "dot", eyeShape: "leaf", gradient: { from: "#101b33", to: "#bd3c34", angle: 45 } },
+        logo,
+      },
+    });
+    assert.equal(
+      editAfterDowngrade.status,
+      200,
+      "après un retour sur Découverte, un QR code déjà personnalisé doit rester modifiable : ${logSink.value}",
+    );
+
+    const stricterAfterDowngrade = await request(`/api/qrcodes/${premiumQrcode.id}`, {
+      method: "PUT",
+      cookie: upgraded.cookie,
+      csrf: upgraded.csrf,
+      headers: upgraded.headers,
+      body: {
+        name: "Ultra",
+        mode: "link",
+        destination: "https://example.test/ultra",
+        style: { moduleShape: "dot", eyeShape: "leaf", margin: 6, gradient: null },
+        logo,
+      },
+    });
+    assert.equal(
+      stricterAfterDowngrade.status,
+      402,
+      "retirer une option payante doit rester autorisé",
+    );
+
+    // ── La rétention des statistiques suit l’offre ───────────────────────────
+    const freeStats = await request(`/api/qrcodes/${firstQrcode.id}/stats?days=365`, { cookie: free.cookie });
+    const freeStatsBody = await freeStats.json();
+    assert.equal(freeStatsBody.maxStatsDays, 30);
+    assert.equal(freeStatsBody.stats.periodDays, 30, "Découverte est plafonné à 30 jours");
+
+    const ultraUser = await registerUser("ultra@example.test", undefined, "10.9.0.5");
+    grantPlan(databasePath, "ultra@example.test", "ultra");
+    const ultraCreate = await request("/api/qrcodes", {
+      method: "POST",
+      cookie: ultraUser.cookie,
+      csrf: ultraUser.csrf,
+      headers: ultraUser.headers,
+      body: { name: "Longue période", mode: "link", destination: "https://example.test/longue" },
+    });
+    const ultraQrcode = (await ultraCreate.json()).qrcode;
+    const ultraStats = await request(`/api/qrcodes/${ultraQrcode.id}/stats?days=365`, { cookie: ultraUser.cookie });
+    const ultraStatsBody = await ultraStats.json();
+    assert.equal(ultraStatsBody.maxStatsDays, 730);
+    assert.equal(ultraStatsBody.stats.periodDays, 365);
+
+    const ultraQuota = await request("/api/qrcodes", { cookie: ultraUser.cookie });
+    const ultraEntitlement = (await ultraQuota.json()).entitlement;
+    assert.equal(ultraEntitlement.maxQrcodes, null, "null signifie illimité");
+    assert.equal(ultraEntitlement.maxActive, null);
+    assert.equal(ultraEntitlement.canCreate, true);
+    assert.equal(ultraEntitlement.canActivate, true);
+    assert.equal(ultraEntitlement.statsDays, 730);
+
+    // ── La grâce de 48 h ─────────────────────────────────────────────────────
+    const graced = await registerUser("grace@example.test", undefined, "10.9.0.6");
+    const graceMs = 48 * 3_600 * 1_000;
+    const periodEnd = Date.now() + 24 * 3_600 * 1_000;
+    grantPlan(databasePath, "grace@example.test", "pro", {
+      status: "canceled",
+      currentPeriodEnd: periodEnd,
+      graceUntil: periodEnd + graceMs,
+    });
+    const duringGrace = await request("/api/qrcodes", { cookie: graced.cookie });
+    assert.equal(
+      (await duringGrace.json()).entitlement.plan,
+      "pro",
+      "les droits sont conservés pendant la grâce de 48 h après la fin de période",
+    );
+
+    const database4 = new DatabaseSync(databasePath);
+    database4
+      .prepare("UPDATE subscriptions SET grace_until = ? WHERE user_id = (SELECT id FROM users WHERE email = 'grace@example.test')")
+      .run(Date.now() - 1);
+    database4.close();
+    const afterGrace = await request("/api/qrcodes", { cookie: graced.cookie });
+    assert.equal(
+      (await afterGrace.json()).entitlement.plan,
+      "decouverte",
+      "la grâce est de 48 h pile, puis le compte revient sur Découverte",
+    );
+
+    // Un Checkout abandonné n’accorde aucun droit.
+    const incomplete = await registerUser("incomplete@example.test", undefined, "10.9.0.7");
+    grantPlan(databasePath, "incomplete@example.test", "ultra", { status: "incomplete" });
+    const incompleteLibrary = await request("/api/qrcodes", { cookie: incomplete.cookie });
+    assert.equal((await incompleteLibrary.json()).entitlement.plan, "decouverte");
+
+    // Un impayé en cours de relance ne doit pas retirer l’accès.
+    const pastDue = await registerUser("impaye@example.test", undefined, "10.9.0.8");
+    grantPlan(databasePath, "impaye@example.test", "pro", { status: "past_due", graceUntil: null });
+    const pastDueLibrary = await request("/api/qrcodes", { cookie: pastDue.cookie });
+    assert.equal((await pastDueLibrary.json()).entitlement.plan, "pro", "past_due reste couvert");
   } finally {
     await stopServer(server);
     rmSync(temporaryDirectory, { recursive: true, force: true });

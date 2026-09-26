@@ -9,9 +9,9 @@
       content="Créez des QR codes personnalisés à partir d'un lien ou de vos coordonnées en quelques secondes."
     />
     <title>qraft — Créez des QR codes qui font avancer</title>
-    <link rel="stylesheet" href="styles.css?v=4" />
+    <link rel="stylesheet" href="styles.css?v=7" />
     <script src="qrcode-generator.js" defer></script>
-    <script src="app.js?v=8" defer></script>
+    <script src="app.js?v=11" defer></script>
   </head>
   <body>
     <div class="app-shell">
@@ -38,12 +38,23 @@
             </div>
             <div class="user-actions" id="userActions" hidden>
               <span class="user-chip" title="Compte connecté"><span class="user-avatar" id="userAvatar">Q</span><span id="userName">Mon compte</span></span>
+              <button class="plan-badge" id="planBadge" type="button" title="Votre offre">Découverte</button>
               <button class="auth-link" id="logoutButton" type="button">Déconnexion</button>
             </div>
           </div>
           <a class="button button-dark button-small create-nav-button" href="#createur">Créer un QR <span>↗</span></a>
         </div>
       </header>
+
+      <div class="quota-banner" id="quotaBanner" hidden role="status">
+        <div class="quota-banner-copy">
+          <strong id="quotaBannerTitle">Votre compte dépasse l’offre Découverte</strong>
+          <p id="quotaBannerDetail"></p>
+        </div>
+        <div class="quota-banner-actions">
+          <button class="button button-dark button-small" type="button" id="quotaBannerTrim">Réduire mes QR codes actifs</button>
+        </div>
+      </div>
 
       <main id="top">
         <section class="hero" aria-labelledby="hero-title">
@@ -178,6 +189,116 @@
 
               <div class="panel-header compact-header">
                 <div>
+                  <span class="panel-label">FORME &amp; FINITIONS</span>
+                  <h3>Façonnez-le module par module.</h3>
+                </div>
+                <button class="text-button mini-reset" id="resetStyle" type="button">Réinitialiser <span>↺</span></button>
+              </div>
+
+              <div class="style-options">
+                <div class="option-block">
+                  <span class="option-label">Forme des modules</span>
+                  <div class="chip-row" role="group" aria-label="Forme des modules">
+                    <button class="chip-button active" type="button" data-module-shape="square">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="7" height="7" /><rect x="11" y="2" width="7" height="7" /><rect x="2" y="11" width="7" height="7" /><rect x="11" y="11" width="7" height="7" /></svg>
+                      Carré
+                    </button>
+                    <button class="chip-button" type="button" data-module-shape="rounded">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="2" width="7" height="7" rx="2.2" /><rect x="11" y="2" width="7" height="7" rx="2.2" /><rect x="2" y="11" width="7" height="7" rx="2.2" /><rect x="11" y="11" width="7" height="7" rx="2.2" /></svg>
+                      Arrondi
+                    </button>
+                    <button class="chip-button" type="button" data-module-shape="dot">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="5.5" cy="5.5" r="3.3" /><circle cx="14.5" cy="5.5" r="3.3" /><circle cx="5.5" cy="14.5" r="3.3" /><circle cx="14.5" cy="14.5" r="3.3" /></svg>
+                      Point
+                    </button>
+                  </div>
+                </div>
+
+                <div class="option-block">
+                  <span class="option-label">Coins (repères de position)</span>
+                  <div class="chip-row" role="group" aria-label="Style des coins">
+                    <button class="chip-button active" type="button" data-eye-shape="square">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 2h7v7H2zM11 2h7v7h-7zM2 11h7v7H2z" /><rect x="4" y="4" width="3" height="3" /><rect x="13" y="4" width="3" height="3" /><rect x="4" y="13" width="3" height="3" /></svg>
+                      Carré
+                    </button>
+                    <button class="chip-button" type="button" data-eye-shape="rounded">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3.4 2h4.2a1.4 1.4 0 0 1 1.4 1.4v4.2A1.4 1.4 0 0 1 7.6 9H3.4A1.4 1.4 0 0 1 2 7.6V3.4A1.4 1.4 0 0 1 3.4 2zM12.4 2h4.2A1.4 1.4 0 0 1 18 3.4v4.2A1.4 1.4 0 0 1 16.6 9h-4.2A1.4 1.4 0 0 1 11 7.6V3.4A1.4 1.4 0 0 1 12.4 2zM3.4 11h4.2a1.4 1.4 0 0 1 1.4 1.4v4.2A1.4 1.4 0 0 1 7.6 18H3.4A1.4 1.4 0 0 1 2 16.6v-4.2A1.4 1.4 0 0 1 3.4 11z" /><rect x="4" y="4" width="3" height="3" rx="1" /><rect x="13" y="4" width="3" height="3" rx="1" /><rect x="4" y="13" width="3" height="3" rx="1" /></svg>
+                      Arrondi
+                    </button>
+                    <button class="chip-button" type="button" data-eye-shape="leaf">
+                      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 2h9A3.5 3.5 0 0 1 18 5.5v9A3.5 3.5 0 0 1 14.5 18h-9A3.5 3.5 0 0 1 2 14.5v-9A3.5 3.5 0 0 1 5.5 2zM5.8 4.5A2.3 2.3 0 0 0 3.5 6.8v6.4a2.3 2.3 0 0 0 2.3 2.3h8.4a2.3 2.3 0 0 0 2.3-2.3V6.8a2.3 2.3 0 0 0-2.3-2.3z" /><rect x="4" y="4" width="3" height="3" rx="1.5" /><rect x="13" y="4" width="3" height="3" rx="1.5" /><rect x="4" y="13" width="3" height="3" rx="1.5" /></svg>
+                      Feuille
+                    </button>
+                  </div>
+                </div>
+
+                <div class="option-block">
+                  <div class="range-head">
+                    <span class="option-label">Marge blanche</span>
+                    <b class="range-value" id="marginValue">4</b>
+                  </div>
+                  <input class="range-input" id="marginRange" type="range" min="0" max="8" step="1" value="4" aria-label="Marge blanche en modules" />
+                  <p class="option-hint" id="marginHint">4 modules — marge recommandée pour un scan fiable.</p>
+                </div>
+
+                <div class="option-block">
+                  <div class="range-head">
+                    <span class="option-label">Dégradé</span>
+                    <label class="switch">
+                      <input id="gradientToggle" type="checkbox" />
+                      <span class="switch-track" aria-hidden="true"></span>
+                    </label>
+                  </div>
+                  <div class="gradient-controls" id="gradientControls" hidden>
+                    <div class="color-pickers">
+                      <label class="color-picker">
+                        <span>Début</span>
+                        <span class="picker-control"><input id="gradientFrom" type="color" value="#101b33" /><b id="gradientFromValue">#101B33</b></span>
+                      </label>
+                      <label class="color-picker">
+                        <span>Fin</span>
+                        <span class="picker-control"><input id="gradientTo" type="color" value="#bd3c34" /><b id="gradientToValue">#BD3C34</b></span>
+                      </label>
+                    </div>
+                    <div class="range-head">
+                      <span class="option-label">Angle</span>
+                      <b class="range-value" id="gradientAngleValue">135°</b>
+                    </div>
+                    <input class="range-input" id="gradientAngle" type="range" min="0" max="360" step="15" value="135" aria-label="Angle du dégradé" />
+                  </div>
+                </div>
+
+                <div class="option-block">
+                  <span class="option-label">Logo au centre</span>
+                  <div class="logo-picker">
+                    <input id="logoInput" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml" hidden />
+                    <button class="logo-drop" id="logoDrop" type="button">
+                      <span class="logo-drop-icon" aria-hidden="true">＋</span>
+                      <span class="logo-drop-text"><b>Ajouter un logo</b><small>PNG, JPG, WEBP ou SVG</small></span>
+                    </button>
+                    <div class="logo-preview" id="logoPreview" hidden>
+                      <span class="logo-preview-frame"><img id="logoThumb" alt="Logo ajouté" /></span>
+                      <span class="logo-preview-meta"><b id="logoName">logo.png</b><small>Le niveau de correction passe automatiquement en H.</small></span>
+                      <button class="logo-remove" id="logoRemove" type="button" aria-label="Retirer le logo">×</button>
+                    </div>
+                  </div>
+                  <div class="logo-size">
+                    <div class="range-head">
+                      <span class="option-label">Taille du logo</span>
+                      <b class="range-value" id="logoSizeValue">22 %</b>
+                    </div>
+                    <input class="range-input" id="logoSize" type="range" min="18" max="30" step="1" value="22" disabled aria-label="Taille du logo en pourcentage du QR code" />
+                    <p class="option-hint" id="logoSizeHint">Ajoutez un logo pour régler sa taille.</p>
+                  </div>
+                </div>
+
+                <p class="style-warning" id="styleWarning" hidden></p>
+              </div>
+
+              <div class="editor-divider"></div>
+
+              <div class="panel-header compact-header">
+                <div>
                   <span class="panel-label">PERSONNALISATION</span>
                   <h3>Donnez-lui une couleur.</h3>
                 </div>
@@ -266,9 +387,19 @@
             <div class="library-summary"><strong id="historyCount">0</strong><span>QR codes<br />enregistrés</span></div>
           </div>
           <div class="library-metrics" id="libraryMetrics" hidden aria-label="Résumé de vos statistiques">
-            <article><span>QR codes actifs</span><strong id="metricQrCount">0</strong></article>
+            <article><span>QR codes enregistrés</span><strong id="metricQrCount">0</strong></article>
             <article><span>Scans cumulés</span><strong id="metricScanCount">0</strong></article>
             <article><span>Scans sur 7 jours</span><strong id="metricWeekCount">0</strong></article>
+          </div>
+          <div class="quota-meters" id="quotaMeters" hidden aria-label="Utilisation de votre offre">
+            <div class="quota-meter" id="quotaStoredMeter">
+              <div class="quota-meter-head"><span>QR codes enregistrés</span><b id="quotaStoredValue">0 / 5</b></div>
+              <div class="quota-track"><span id="quotaStoredBar"></span></div>
+            </div>
+            <div class="quota-meter" id="quotaActiveMeter">
+              <div class="quota-meter-head"><span>QR codes actifs</span><b id="quotaActiveValue">0 / 1</b></div>
+              <div class="quota-track"><span id="quotaActiveBar"></span></div>
+            </div>
           </div>
           <div class="history-grid" id="historyGrid"></div>
         </section>
@@ -340,6 +471,21 @@
         </form>
         <p class="form-error" id="authError" role="alert" hidden></p>
         <p class="security-note"><span>✓</span> Mot de passe haché · session sécurisée · données isolées par compte</p>
+      </section>
+    </div>
+
+    <div class="modal-backdrop" id="quotaModal" hidden>
+      <section class="modal-card quota-modal-card" role="dialog" aria-modal="true" aria-labelledby="quotaModalTitle">
+        <button class="modal-close" type="button" data-close-modal="quotaModal" aria-label="Fermer">×</button>
+        <span class="section-kicker">RÉDUIRE MES QR CODES ACTIFS</span>
+        <h2 id="quotaModalTitle">Trop de QR codes actifs ?</h2>
+        <p class="modal-intro" id="quotaModalIntro">—</p>
+        <div class="quota-modal-list" id="quotaModalList"></div>
+        <div class="quota-modal-actions">
+          <button class="button button-light" type="button" data-close-modal="quotaModal">Annuler</button>
+          <button class="button button-dark" type="button" id="quotaModalConfirm">Désactiver le surplus</button>
+        </div>
+        <p class="privacy-note">Un QR code désactivé affiche une page d’explication à vos clients. Il reste dans votre bibliothèque et peut être réactivé à tout moment.</p>
       </section>
     </div>
 
